@@ -43,7 +43,7 @@ class GenerateRequest(BaseModel):
     target_audience: Optional[str] = ""
     official_link: Optional[str] = ""
     manual_link: Optional[str] = ""
-    tone_preference: Optional[str] = "standard"
+    tone_preference: Optional[str] = "sales"
     api_key: Optional[str] = ""
     api_provider: Optional[str] = ""
     api_base_url: Optional[str] = ""

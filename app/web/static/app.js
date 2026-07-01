@@ -94,6 +94,22 @@ function getApiPayload() {
     };
 }
 
+function getSelectedTone() {
+    const checkedTone = document.querySelector('input[name="tone_preference"]:checked');
+    return checkedTone ? checkedTone.value : "sales";
+}
+
+function getToneLabel(tone) {
+    const labels = {
+        standard: "Standardowy",
+        sales: "Sprzedażowy",
+        family: "Rodzinny",
+        neutral: "Neutralny",
+        short: "Krótszy"
+    };
+    return labels[tone] || labels.sales;
+}
+
 function updateApiFields() {
     const provider = apiProvider.value;
     const isCodexPrompt = provider === "codex_prompt";
@@ -185,7 +201,7 @@ generatorForm.addEventListener("submit", async (e) => {
         target_audience: document.getElementById("target_audience").value,
         official_link: document.getElementById("official_link").value,
         manual_link: document.getElementById("manual_link").value,
-        tone_preference: document.querySelector('input[name="tone_preference"]:checked').value,
+        tone_preference: getSelectedTone(),
         ...getApiPayload()
     };
     
@@ -230,6 +246,7 @@ async function runPipeline(payload, endpoint) {
             populateCodexPrompt(data);
             showToast("Prompt do Codexa jest gotowy.", "success");
         } else {
+            data.tone_preference = data.tone_preference || payload.tone_preference || "sales";
             populateResults(data);
             showToast("Opis wygenerowany pomyślnie!", "success");
         }
@@ -272,13 +289,14 @@ function populateResults(data) {
     contentView.style.display = "flex";
     
     // Preorder status
+    const toneLabel = getToneLabel(data.tone_preference || getSelectedTone());
     if (data.is_preorder) {
-        productModeBadge.textContent = "Przedsprzedaż";
+        productModeBadge.textContent = `Przedsprzedaż / ${toneLabel}`;
         productModeBadge.style.backgroundColor = "var(--accent-pink)";
         specPreorderField.style.display = "flex";
         specReleaseDate.value = data.release_date_note || "";
     } else {
-        productModeBadge.textContent = "Standard";
+        productModeBadge.textContent = toneLabel;
         productModeBadge.style.backgroundColor = "var(--accent-indigo)";
         specPreorderField.style.display = "none";
     }
@@ -589,6 +607,7 @@ importCodexResultBtn.addEventListener("click", async () => {
             throw new Error(data.detail || "Nie udało się wczytać wyniku Codexa.");
         }
         
+        data.tone_preference = data.tone_preference || "sales";
         populateResults(data);
         showToast("Wynik Codexa zapisany.", "success");
     } catch (err) {

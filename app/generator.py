@@ -219,7 +219,7 @@ def generate_descriptions(
     facts_text = format_facts_as_text(resolved_facts)
     
     # 2. Get tone instruction
-    tone = force_tone or user_inputs.get("tone_preference", "standard")
+    tone = force_tone or user_inputs.get("tone_preference", "sales")
     if tone == "sales":
         tone_instruction = "Generuj bardziej sprzedażowo, podkreśl emocje, klimat i to, dlaczego rozgrywka wciąga."
     elif tone == "neutral":

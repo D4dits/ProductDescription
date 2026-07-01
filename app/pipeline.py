@@ -187,7 +187,7 @@ Parametry użytkownika:
 - Grupa docelowa: {user_inputs.get('target_audience') or ''}
 - Link oficjalny użytkownika: {user_inputs.get('official_link') or ''}
 - Link instrukcji użytkownika: {user_inputs.get('manual_link') or ''}
-- Ton: {user_inputs.get('tone_preference') or 'standard'}
+- Ton: {user_inputs.get('tone_preference') or 'sales'}
 
 Zasady:
 1. Pisz wyłącznie po polsku.
