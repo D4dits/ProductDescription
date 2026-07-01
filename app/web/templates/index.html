@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>graszki.pl - Generator Opisów Produktów</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Background glowing shapes -->
+    <div class="glow-bg">
+        <div class="shape shape-1"></div>
+        <div class="shape shape-2"></div>
+    </div>
+
+    <header>
+        <div class="container header-container">
+            <div class="logo">
+                <i class="fa-solid fa-dice-d20 logo-icon"></i>
+                <span class="logo-text">graszki<span class="logo-dot">.pl</span></span>
+            </div>
+            <div class="header-tagline">Generator Opisów Produktów</div>
+        </div>
+    </header>
+
+    <main class="container">
+        <div class="grid-layout">
+            <!-- Left Side: Configuration Form -->
+            <section class="card glass-card form-section">
+                <div class="card-header">
+                    <i class="fa-solid fa-sliders header-icon"></i>
+                    <h2>Parametry produktu</h2>
+                </div>
+                
+                <form id="generator-form">
+                    <div class="form-group">
+                        <label for="product_name">Nazwa gry (np. Papierowe Morze) <span class="required">*</span></label>
+                        <input type="text" id="product_name" name="product_name" placeholder="Wpisz polską nazwę gry..." required>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="original_title">Oryginalny tytuł</label>
+                            <input type="text" id="original_title" name="original_title" placeholder="Opcjonalnie (np. Sea Salt & Paper)...">
+                        </div>
+                        <div class="form-group">
+                            <label for="publisher">Wydawca</label>
+                            <input type="text" id="publisher" name="publisher" placeholder="Opcjonalnie (np. Muduko)...">
+                        </div>
+                    </div>
+
+                    <div class="form-row align-center">
+                        <div class="form-group checkbox-group">
+                            <label class="checkbox-container">
+                                <input type="checkbox" id="is_preorder" name="is_preorder">
+                                <span class="checkmark"></span>
+                                Przedsprzedaż
+                            </label>
+                        </div>
+                        <div class="form-group" id="release-date-group" style="display: none;">
+                            <label for="release_date_note">Orientacyjna premiera</label>
+                            <input type="text" id="release_date_note" name="release_date_note" placeholder="np. Q3 2026, wrzesień 2026...">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="category">Kategoria</label>
+                            <select id="category" name="category">
+                                <option value="">Wybierz kategorię...</option>
+                                <option value="gra rodzinna">Gra rodzinna</option>
+                                <option value="gra karciana">Gra karciana</option>
+                                <option value="gra logiczna">Gra logiczna</option>
+                                <option value="gra imprezowa">Gra imprezowa</option>
+                                <option value="gra strategiczna">Gra strategiczna</option>
+                                <option value="gra dla dzieci">Gra dla dzieci</option>
+                                <option value="kooperacyjna">Kooperacyjna</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="target_audience">Grupa docelowa</label>
+                            <select id="target_audience" name="target_audience">
+                                <option value="">Wybierz grupę...</option>
+                                <option value="rodziny">Rodziny</option>
+                                <option value="dzieci">Dzieci</option>
+                                <option value="pary">Pary</option>
+                                <option value="początkujący">Początkujący</option>
+                                <option value="zaawansowani gracze">Zaawansowani gracze</option>
+                                <option value="imprezy">Imprezowicze</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="official_link">Link do oficjalnej strony (opcjonalnie)</label>
+                        <input type="url" id="official_link" name="official_link" placeholder="https://...">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="manual_link">Link do instrukcji PDF (opcjonalnie)</label>
+                        <input type="url" id="manual_link" name="manual_link" placeholder="https://...pdf">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Priorytet tonu opisu</label>
+                        <div class="radio-group">
+                            <label class="radio-container">
+                                <input type="radio" name="tone_preference" value="standard" checked>
+                                <span class="radio-mark"></span>
+                                Standardowy
+                            </label>
+                            <label class="radio-container">
+                                <input type="radio" name="tone_preference" value="sales">
+                                <span class="radio-mark"></span>
+                                Sprzedażowy
+                            </label>
+                            <label class="radio-container">
+                                <input type="radio" name="tone_preference" value="neutral">
+                                <span class="radio-mark"></span>
+                                Neutralny
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Collapsible API Configuration -->
+                    <div class="api-config-section">
+                        <div class="api-config-header" id="api-config-toggle">
+                            <span><i class="fa-solid fa-key"></i> Konfiguracja API (Opcjonalnie)</span>
+                            <i class="fa-solid fa-chevron-down toggle-icon" id="api-toggle-icon"></i>
+                        </div>
+                        <div class="api-config-body" id="api-config-fields" style="display: none;">
+                            <div class="form-group">
+                                <label for="api_provider">Dostawca API</label>
+                                <select id="api_provider" name="api_provider">
+                                    <option value="">Domyślny z .env</option>
+                                    <option value="codex_prompt">Bez API / prompt do Codexa</option>
+                                    <option value="gemini">Gemini (Google)</option>
+                                    <option value="openai">OpenAI (GPT)</option>
+                                    <option value="deepseek">DeepSeek (OpenAI-compatible)</option>
+                                    <option value="z_ai">Z.AI (OpenAI-compatible)</option>
+                                    <option value="custom">Inny (OpenAI-compatible)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="api_key">Klucz API</label>
+                                <input type="password" id="api_key" name="api_key" placeholder="Wpisz klucz API (np. z.ai)...">
+                            </div>
+                            <div class="form-group" id="api-base-url-group" style="display: none;">
+                                <label for="api_base_url">Base URL API</label>
+                                <input type="url" id="api_base_url" name="api_base_url" placeholder="https://api.z.ai/api/paas/v4">
+                            </div>
+                            <div class="form-group" id="api-model-group" style="display: none;">
+                                <label for="api_model">Nazwa modelu</label>
+                                <input type="text" id="api_model" name="api_model" placeholder="np. glm-4, gpt-4o-mini...">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" id="generate-btn" class="btn btn-primary btn-block">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        <span>Generuj opis</span>
+                    </button>
+                </form>
+            </section>
+
+            <!-- Right Side: Results Section (placeholder at first, then content) -->
+            <section class="card glass-card results-section" id="results-card">
+                <!-- Initial State -->
+                <div class="initial-state" id="initial-state-view">
+                    <div class="initial-content">
+                        <div class="pulse-icon">
+                            <i class="fa-solid fa-dice-five"></i>
+                        </div>
+                        <h3>Gotowy na generowanie?</h3>
+                        <p>Wpisz nazwę gry planszowej po lewej stronie, aby zebrać dane i wygenerować zestaw unikatowych materiałów sprzedażowych pod SEO.</p>
+                    </div>
+                </div>
+
+                <!-- Loading State -->
+                <div class="loading-state" id="loading-state-view" style="display: none;">
+                    <div class="spinner-container">
+                        <div class="spinner"></div>
+                        <div class="loading-phase" id="loading-phase-text">Wyszukiwanie informacji w internecie...</div>
+                        <p class="loading-sub">Może to zająć od 15 do 45 sekund (odpytujemy BGG, szukamy oficjalnych linków i czytamy dane).</p>
+                    </div>
+                </div>
+
+                <!-- Codex Prompt State -->
+                <div class="content-state" id="codex-prompt-state-view" style="display: none;">
+                    <div class="results-header-actions">
+                        <div class="product-badge" id="codex-product-mode-badge">Prompt do Codexa</div>
+                    </div>
+
+                    <div class="prompt-workspace">
+                        <div class="output-group">
+                            <div class="output-label-container">
+                                <label for="codex_prompt_output">Prompt do wklejenia w rozmowie z Codexem</label>
+                                <button class="btn-copy" onclick="copyValue('codex_prompt_output')"><i class="fa-regular fa-copy"></i> Kopiuj prompt</button>
+                            </div>
+                            <textarea id="codex_prompt_output" class="editable-output code-font" rows="18"></textarea>
+                        </div>
+
+                        <div class="output-group">
+                            <div class="output-label-container">
+                                <label for="codex_response_input">Wynik JSON od Codexa</label>
+                                <button class="btn-copy" onclick="pasteFromClipboard('codex_response_input')"><i class="fa-solid fa-paste"></i> Wklej</button>
+                            </div>
+                            <textarea id="codex_response_input" class="editable-output code-font" rows="12" placeholder='Wklej tutaj JSON wygenerowany przez Codexa...'></textarea>
+                        </div>
+
+                        <div class="bottom-actions-row">
+                            <button class="btn btn-success" id="import-codex-result-btn">
+                                <i class="fa-solid fa-file-import"></i> Wczytaj wynik i zapisz
+                            </button>
+                        </div>
+
+                        <div class="sources-container">
+                            <h4><i class="fa-solid fa-circle-info"></i> Źródła dołączone do promptu</h4>
+                            <div class="sources-list" id="codex-sources-list-container"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Generated Content State -->
+                <div class="content-state" id="content-state-view" style="display: none;">
+                    <div class="results-header-actions">
+                        <div class="product-badge" id="product-mode-badge">Standard</div>
+                        <div class="quick-actions-bar">
+                            <span class="quick-actions-label">Zmień wersję:</span>
+                            <button class="btn btn-sm btn-secondary regen-tone-btn" data-tone="standard">Standard</button>
+                            <button class="btn btn-sm btn-secondary regen-tone-btn" data-tone="sales">Sprzedażowa</button>
+                            <button class="btn btn-sm btn-secondary regen-tone-btn" data-tone="family">Rodzinna</button>
+                            <button class="btn btn-sm btn-secondary regen-tone-btn" data-tone="neutral">Neutralna</button>
+                            <button class="btn btn-sm btn-secondary regen-tone-btn" data-tone="short">Krótsza</button>
+                        </div>
+                    </div>
+
+                    <div class="tabs-navigation">
+                        <button class="tab-btn active" data-tab="meta-tab">Metadane SEO</button>
+                        <button class="tab-btn" data-tab="html-tab">Opis HTML</button>
+                        <button class="tab-btn" data-tab="specs-tab">Dane techniczne i Pudełko</button>
+                    </div>
+
+                    <!-- TAB 1: SEO metadata -->
+                    <div class="tab-content active" id="meta-tab">
+                        <div class="output-group">
+                            <div class="output-label-container">
+                                <label for="out_product_name">Nazwa produktu w sklepie</label>
+                                <button class="btn-copy" onclick="copyValue('out_product_name')"><i class="fa-regular fa-copy"></i> Kopiuj</button>
+                            </div>
+                            <input type="text" id="out_product_name" class="editable-output">
+                        </div>
+
+                        <div class="output-group">
+                            <div class="output-label-container">
+                                <label for="out_seo_title">Tytuł SEO strony produktu (zalecane ~60 znaków)</label>
+                                <button class="btn-copy" onclick="copyValue('out_seo_title')"><i class="fa-regular fa-copy"></i> Kopiuj</button>
+                            </div>
+                            <input type="text" id="out_seo_title" class="editable-output">
+                            <div class="character-counter" id="seo_title_count">0 znaków</div>
+                        </div>
+
+                        <div class="output-group">
+                            <div class="output-label-container">
+                                <label for="out_meta_description">Meta opis w wyszukiwarce (zalecane 140-160 znaków)</label>
+                                <button class="btn-copy" onclick="copyValue('out_meta_description')"><i class="fa-regular fa-copy"></i> Kopiuj</button>
+                            </div>
+                            <textarea id="out_meta_description" class="editable-output" rows="3"></textarea>
+                            <div class="character-counter" id="meta_desc_count">0 znaków</div>
+                        </div>
+
+                        <div class="output-group">
+                            <div class="output-label-container">
+                                <label for="out_short_description">Opis skrócony (listy produktów, max 300 znaków)</label>
+                                <button class="btn-copy" onclick="copyValue('out_short_description')"><i class="fa-regular fa-copy"></i> Kopiuj</button>
+                            </div>
+                            <textarea id="out_short_description" class="editable-output" rows="3"></textarea>
+                            <div class="character-counter" id="short_desc_count">0 znaków</div>
+                        </div>
+
+                        <div class="output-group">
+                            <div class="output-label-container">
+                                <label for="out_tags">Słowa kluczowe / Tagi (oddzielone przecinkami)</label>
+                                <button class="btn-copy" onclick="copyTags()"><i class="fa-regular fa-copy"></i> Kopiuj</button>
+                            </div>
+                            <input type="text" id="out_tags" class="editable-output" placeholder="Tagi...">
+                            <div class="tags-pills" id="tags-pills-container"></div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 2: HTML Description -->
+                    <div class="tab-content" id="html-tab">
+                        <div class="output-group html-container-split">
+                            <div class="split-pane raw-html-pane">
+                                <div class="output-label-container">
+                                    <label for="out_extended_description_html">Kod HTML (gotowy do wklejenia)</label>
+                                    <button class="btn-copy" onclick="copyValue('out_extended_description_html')"><i class="fa-regular fa-copy"></i> Kopiuj HTML</button>
+                                </div>
+                                <textarea id="out_extended_description_html" class="editable-output code-font" rows="18"></textarea>
+                            </div>
+                            
+                            <div class="split-pane preview-pane">
+                                <label>Podgląd wizualny opisu</label>
+                                <div class="html-preview-box" id="html-preview-container"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 3: Tech Specs and Box Contents -->
+                    <div class="tab-content" id="specs-tab">
+                        <div class="specs-grid">
+                            <!-- Box contents -->
+                            <div class="box-contents-card">
+                                <div class="output-label-container">
+                                    <label>Zawartość pudełka (jeden element na linię)</label>
+                                </div>
+                                <textarea id="out_box_contents" class="editable-output" rows="12"></textarea>
+                            </div>
+
+                            <!-- Tech specs form -->
+                            <div class="tech-specs-card">
+                                <label>Dane techniczne</label>
+                                <div class="specs-form-grid">
+                                    <div class="spec-field">
+                                        <label for="spec_publisher">Wydawca</label>
+                                        <input type="text" id="spec_publisher" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_designer">Projektant / Autor</label>
+                                        <input type="text" id="spec_designer" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_illustrator">Ilustrator</label>
+                                        <input type="text" id="spec_illustrator" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_edition_language">Język wydania</label>
+                                        <input type="text" id="spec_edition_language" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_manual_language">Język instrukcji</label>
+                                        <input type="text" id="spec_manual_language" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_players">Liczba graczy</label>
+                                        <input type="text" id="spec_players" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_age">Wiek</label>
+                                        <input type="text" id="spec_age" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_play_time">Czas gry (min)</label>
+                                        <input type="text" id="spec_play_time" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field">
+                                        <label for="spec_instruction_pdf">Instrukcja PDF (link)</label>
+                                        <input type="text" id="spec_instruction_pdf" class="editable-output spec-input">
+                                    </div>
+                                    <div class="spec-field" id="spec_preorder_field" style="display: none;">
+                                        <label for="spec_release_date">Data premiery</label>
+                                        <input type="text" id="spec_release_date" class="editable-output spec-input">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bottom panel: Warnings and Sources -->
+                    <div class="bottom-results-pane">
+                        <div class="warnings-container" id="warnings-box" style="display: none;">
+                            <h4><i class="fa-solid fa-triangle-exclamation"></i> Uwagi i ostrzeżenia</h4>
+                            <ul class="warnings-list" id="warnings-list-container"></ul>
+                        </div>
+
+                        <div class="sources-container">
+                            <h4><i class="fa-solid fa-circle-info"></i> Wykorzystane źródła</h4>
+                            <div class="sources-list" id="sources-list-container"></div>
+                        </div>
+                    </div>
+
+                    <!-- Main Save/Regenerate Controls -->
+                    <div class="bottom-actions-row">
+                        <button class="btn btn-secondary" id="re-run-btn">
+                            <i class="fa-solid fa-rotate"></i> Pobierz dane i generuj ponownie
+                        </button>
+                        <button class="btn btn-success" id="save-edit-btn">
+                            <i class="fa-solid fa-floppy-disk"></i> Zapisz poprawioną wersję
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
