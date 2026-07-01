@@ -32,12 +32,30 @@ Narzędzie automatycznie przeszukuje internet (BoardGameGeek XML API 2 + wyszuki
 
 ### Instrukcja krok po kroku
 
-1. **Pobierz zależności**:
+1. **Sklonuj repozytorium i wejdź do katalogu projektu**:
+   ```bash
+   git clone git@github.com:D4dits/ProductDescription.git
+   cd ProductDescription
+   ```
+
+2. **Utwórz i aktywuj środowisko wirtualne**:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
+   ```
+
+   Na Windows:
+   ```powershell
+   python -m venv venv
+   venv\Scripts\activate
+   ```
+
+3. **Pobierz zależności**:
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Skonfiguruj plik środowiskowy `.env`**:
+4. **Skonfiguruj plik środowiskowy `.env`**:
    Skopiuj plik `.env.example` jako `.env`:
    ```bash
    cp .env.example .env
