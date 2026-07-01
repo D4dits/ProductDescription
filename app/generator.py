@@ -7,6 +7,9 @@ from app.logger import logger
 from app.json_utils import parse_llm_json
 from app.validator import check_similarity_with_existing
 
+SEO_BRAND_SUFFIX = " | Graszki.pl"
+SEO_TITLE_MAX_LENGTH = 65
+
 GENERATOR_SYSTEM_INSTRUCTION = """Jesteś doświadczonym copywriterem specjalizującym się w branży gier planszowych oraz optymalizacji SEO/GEO. Twój cel to przygotowanie unikalnych, atrakcyjnych i zgodnych z wymaganiami opisów produktów dla sklepu graszki.pl.
 
 Napisz tekst całkowicie po polsku, zachowując przyjazny, konkretny, lekko entuzjastyczny, ale wiarygodny ton. Unikaj agresywnego marketingu, pustych obietnic i nadmiaru przymiotników. Używaj prostego, naturalnego języka.
@@ -20,6 +23,8 @@ Zasady kluczowe:
 6. Jeśli produkt to Przedsprzedaż, tytuł SEO musi zaczynać się od słowa "Przedsprzedaż", a w danych technicznych i opisie musi pojawić się informacja o orientacyjnej premierze bez obiecywania sztywnej daty dostawy.
 7. HTML musi posiadać ścisłą strukturę z nagłówkami <h2> i listami <ul>.
 8. Zwróć wyłącznie poprawny JSON. Wartości tekstowe nie mogą zawierać nieucieczonych cudzysłowów podwójnych; w treści używaj apostrofów albo encji HTML &quot;.
+9. Tytuł SEO ma kończyć się nazwą marki: | Graszki.pl.
+10. Opis skrócony i meta opis muszą być jedną linią tekstu, bez znaków nowej linii.
 """
 
 GENERATOR_PROMPT_TEMPLATE = """Przygotuj zestaw treści dla gry planszowej: {game_name}
@@ -74,12 +79,43 @@ Wymagane sekcje w opisie rozszerzonym HTML:
 Zwróć wynik jako obiekt JSON o następującej strukturze:
 {{
   "short_description": "Opis skrócony (1-2 zdania, max 300 znaków. Ma zawierać nazwę gry, typ gry, najważniejszą korzyść. Unikaj ogólników)",
-  "seo_title": "Tytuł SEO (max ok. 60 znaków, np. 'Gra planszowa X - strategiczna planszówka' lub 'Przedsprzedaż Gra planszowa X - gra karciana')",
-  "meta_description": "Meta opis (140-160 znaków, naturalny, zawiera nazwę, typ gry, najważniejsze parametry, brak cudzysłowów)",
+  "seo_title": "Tytuł SEO (max ok. 60-65 znaków, kończy się '| Graszki.pl', np. 'Gra planszowa X - strategiczna planszówka | Graszki.pl')",
+  "meta_description": "Meta opis (140-160 znaków, jedna linia, naturalny, zawiera nazwę, typ gry, najważniejsze parametry, brak cudzysłowów)",
   "tags": ["tag1", "tag2", "tag3", "słowo kluczowe", "autor", "wydawca"],
   "extended_description_html": "Wygenerowany kod HTML zawierający sekcje opisane wyżej (bez stylów inline, czyste tagi h2, p, ul, li)"
 }}
 """
+
+def normalize_single_line_text(value: str) -> str:
+    """Collapse whitespace so metadata copies cleanly into shop fields."""
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+def apply_seo_brand_suffix(title: str) -> str:
+    """Append Graszki.pl while keeping the SEO title within the validator limit."""
+    normalized = normalize_single_line_text(title)
+    if not normalized:
+        return ""
+
+    base_title = re.sub(r"\s*(?:[|–-]\s*)?graszki\.pl\s*$", "", normalized, flags=re.IGNORECASE).strip()
+    base_title = base_title.rstrip(" |-–")
+
+    available = SEO_TITLE_MAX_LENGTH - len(SEO_BRAND_SUFFIX)
+    if len(base_title) > available:
+        shortened = base_title[:available].rstrip()
+        if " " in shortened:
+            shortened = shortened.rsplit(" ", 1)[0]
+        base_title = shortened.rstrip(" |-–")
+
+    return f"{base_title}{SEO_BRAND_SUFFIX}" if base_title else normalized
+
+def normalize_product_metadata(product_data: dict) -> dict:
+    """Normalize copy-sensitive metadata fields in-place and return the dict."""
+    product_data["short_description"] = normalize_single_line_text(product_data.get("short_description", ""))
+    product_data["meta_description"] = normalize_single_line_text(product_data.get("meta_description", ""))
+    product_data["seo_title"] = apply_seo_brand_suffix(product_data.get("seo_title", ""))
+    return product_data
 
 def apply_legacy_inline_styles(html_content: str) -> str:
     """
@@ -258,6 +294,7 @@ def generate_descriptions(
         )
         
         result = parse_llm_json(response_text)
+        normalize_product_metadata(result)
         
         # Post-process HTML for inline styles if requested
         html_content = result.get("extended_description_html", "")

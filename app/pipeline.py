@@ -5,7 +5,7 @@ from app.search import search_web_links, get_combined_search_queries
 from app.scraper import scrape_page
 from app.extractor import extract_facts
 from app.validator import resolve_facts_conflicts, validate_generated_content
-from app.generator import generate_descriptions
+from app.generator import generate_descriptions, normalize_product_metadata
 from app.exporter import export_results
 
 def _collect_sources(user_inputs: dict) -> dict:
@@ -146,8 +146,8 @@ def build_codex_prompt_package(user_inputs: dict) -> dict:
   "is_preorder": false,
   "release_date_note": "",
   "short_description": "1-2 zdania, max 300 znaków",
-  "seo_title": "max ok. 60 znaków",
-  "meta_description": "140-160 znaków",
+  "seo_title": "max ok. 60-65 znaków, kończy się | Graszki.pl",
+  "meta_description": "140-160 znaków, jedna linia bez znaków nowej linii",
   "tags": ["tag1", "tag2"],
   "extended_description_html": "<h2>Krótko o grze</h2>...",
   "box_contents": ["element 1", "element 2"],
@@ -196,7 +196,9 @@ Zasady:
 4. Opis HTML ma zawierać sekcje: <h2>Krótko o grze</h2>, <h2>Na czym polega rozgrywka?</h2>, <h2>Dlaczego warto?</h2>, <h2>Zawartość pudełka:</h2>, <h2>Dodatkowe informacje:</h2>. Sekcja <h2>Dla kogo będzie dobra?</h2> jest opcjonalna, gdy pasuje do produktu.
 5. Nie używaj agresywnych obietnic typu "najlepsza gra na rynku", "gwarantowana premiera", "najtańsza oferta".
 6. Jeśli brakuje ważnych danych, zostaw pusty string i dodaj ostrzeżenie w polu warnings.
-7. Odpowiedz wyłącznie poprawnym JSON-em, bez markdown i bez komentarzy.
+7. Tytuł SEO zakończ frazą: | Graszki.pl.
+8. Meta opis i opis skrócony zwróć jako jedną linię tekstu, bez załamań linii.
+9. Odpowiedz wyłącznie poprawnym JSON-em, bez markdown i bez komentarzy.
 
 Wymagana struktura JSON:
 {expected_json}
@@ -296,6 +298,7 @@ def run_generation_pipeline(user_inputs: dict) -> dict:
         "sources": formatted_sources,
         "warnings": all_warnings
     }
+    normalize_product_metadata(final_output)
     
     # 10. Export results to output/ directory
     export_results(final_output)

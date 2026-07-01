@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 from app.pipeline import run_generation_pipeline, build_codex_prompt_package
-from app.generator import generate_descriptions, apply_legacy_inline_styles
+from app.generator import generate_descriptions, apply_legacy_inline_styles, normalize_product_metadata
 from app.exporter import export_results
 from app.config import HOST, PORT
 from app.validator import validate_generated_content
@@ -106,7 +106,7 @@ def normalize_product_output(data: Dict[str, Any]) -> Dict[str, Any]:
 
     html_content = data.get("extended_description_html", "")
 
-    return {
+    normalized = {
         "product_name": data.get("product_name", ""),
         "original_title": data.get("original_title", ""),
         "is_preorder": bool(data.get("is_preorder", False)),
@@ -131,6 +131,7 @@ def normalize_product_output(data: Dict[str, Any]) -> Dict[str, Any]:
         "sources": sources,
         "warnings": warnings,
     }
+    return normalize_product_metadata(normalized)
 
 @app.get("/", response_class=HTMLResponse)
 async def read_index(request: Request):
@@ -189,6 +190,7 @@ async def api_import_codex_result(payload: ImportCodexResultRequest):
 async def api_save_manual_edit(payload: SaveEditRequest):
     try:
         product_data = payload.model_dump()
+        normalize_product_metadata(product_data)
         slug = export_results(product_data)
         return {"status": "success", "slug": slug, "message": "Poprawiona wersja została zapisana."}
     except Exception as e:
@@ -276,6 +278,7 @@ async def api_regenerate(payload: RegenerateRequest):
             "sources": resolved_facts.get("original_sources", []),
             "warnings": validation_warnings
         }
+        normalize_product_metadata(final_output)
         
         # 5. Export
         export_results(final_output)

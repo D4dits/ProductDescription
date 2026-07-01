@@ -1,5 +1,10 @@
 import pytest
-from app.generator import apply_legacy_inline_styles
+from app.generator import (
+    SEO_TITLE_MAX_LENGTH,
+    apply_legacy_inline_styles,
+    apply_seo_brand_suffix,
+    normalize_product_metadata,
+)
 
 def test_legacy_inline_styles():
     html_input = (
@@ -51,3 +56,36 @@ def test_legacy_inline_styles_removes_whitespace_from_href():
 def test_legacy_inline_styles_empty():
     assert apply_legacy_inline_styles("") == ""
     assert apply_legacy_inline_styles(None) == ""
+
+def test_apply_seo_brand_suffix_appends_brand():
+    assert (
+        apply_seo_brand_suffix("Jungle Speed Eco - gra imprezowa")
+        == "Jungle Speed Eco - gra imprezowa | Graszki.pl"
+    )
+
+def test_apply_seo_brand_suffix_does_not_duplicate_brand():
+    assert (
+        apply_seo_brand_suffix("Jungle Speed Eco - gra imprezowa | Graszki.pl")
+        == "Jungle Speed Eco - gra imprezowa | Graszki.pl"
+    )
+
+def test_apply_seo_brand_suffix_shortens_long_title():
+    title = apply_seo_brand_suffix(
+        "Bardzo dlugi tytul gry planszowej strategicznej dla calej rodziny"
+    )
+
+    assert title.endswith(" | Graszki.pl")
+    assert len(title) <= SEO_TITLE_MAX_LENGTH
+
+def test_normalize_product_metadata_single_line_fields():
+    data = {
+        "short_description": "Pierwsza linia\nDruga linia",
+        "meta_description": "Opis z\t tabulatorem\n i nowa linia",
+        "seo_title": "Gra imprezowa",
+    }
+
+    normalize_product_metadata(data)
+
+    assert data["short_description"] == "Pierwsza linia Druga linia"
+    assert data["meta_description"] == "Opis z tabulatorem i nowa linia"
+    assert data["seo_title"] == "Gra imprezowa | Graszki.pl"
