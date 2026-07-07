@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 from app.pipeline import run_generation_pipeline, build_codex_prompt_package
-from app.generator import generate_descriptions, apply_legacy_inline_styles, normalize_product_metadata
+from app.generator import generate_descriptions, apply_legacy_inline_styles, normalize_product_metadata, normalize_description_html
 from app.exporter import export_results
 from app.config import HOST, PORT
 from app.validator import validate_generated_content
@@ -104,7 +104,12 @@ def normalize_product_output(data: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(warnings, str):
         warnings = [warnings]
 
-    html_content = data.get("extended_description_html", "")
+    html_content = normalize_description_html(
+        data.get("extended_description_html", ""),
+        box_contents=box_contents,
+        is_preorder=bool(data.get("is_preorder", False)),
+        release_date_note=data.get("release_date_note", ""),
+    )
 
     normalized = {
         "product_name": data.get("product_name", ""),
@@ -177,6 +182,7 @@ async def api_import_codex_result(payload: ImportCodexResultRequest):
             is_preorder=product_data.get("is_preorder", False),
             additional_info=product_data.get("additional_info", {}),
             fact_sources=fact_sources,
+            box_contents=product_data.get("box_contents", []),
         )
         product_data["warnings"] = list(dict.fromkeys(product_data.get("warnings", []) + validation_warnings))
 
@@ -191,6 +197,12 @@ async def api_save_manual_edit(payload: SaveEditRequest):
     try:
         product_data = payload.model_dump()
         normalize_product_metadata(product_data)
+        product_data["extended_description_html"] = normalize_description_html(
+            product_data.get("extended_description_html", ""),
+            box_contents=product_data.get("box_contents", []),
+            is_preorder=product_data.get("is_preorder", False),
+            release_date_note=product_data.get("release_date_note", ""),
+        )
         slug = export_results(product_data)
         return {"status": "success", "slug": slug, "message": "Poprawiona wersja została zapisana."}
     except Exception as e:
@@ -244,7 +256,8 @@ async def api_regenerate(payload: RegenerateRequest):
             html_desc=generated.get("extended_description_html", ""),
             is_preorder=payload.is_preorder,
             additional_info=resolved_facts,
-            fact_sources=fact_sources
+            fact_sources=fact_sources,
+            box_contents=resolved_facts.get("box_contents", [])
         )
         
         # 4. Form final product structure

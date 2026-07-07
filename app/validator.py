@@ -11,6 +11,11 @@ FORBIDDEN_PHRASES = [
     "gwarantowana premiera",
     "najtańsza oferta",
     "hit sprzedaży",
+    "w oficjalnym opisie",
+    "na stronie producenta",
+    "według wydawcy",
+    "według producenta",
+    "oficjalny opis podkreśla",
 ]
 
 # Source type priorities
@@ -254,7 +259,8 @@ def validate_generated_content(
     html_desc: str,
     is_preorder: bool,
     additional_info: dict,
-    fact_sources: dict
+    fact_sources: dict,
+    box_contents: list | None = None
 ) -> list:
     """
     Validates final descriptions and metadata against business requirements.
@@ -286,9 +292,10 @@ def validate_generated_content(
         r"<h[23][^>]*>\s*Na czym polega rozgrywka\?\s*</h[23]>": "Na czym polega rozgrywka?",
         r"<h[23][^>]*>\s*Dlaczego warto\?\s*</h[23]>": "Dlaczego warto?",
         r"<h[23][^>]*>\s*Dla kogo będzie dobra\?\s*</h[23]>": "Dla kogo będzie dobra?",
-        r"<h[23][^>]*>\s*Zawartość pudełka:\s*</h[23]>": "Zawartość pudełka:",
         r"<h[23][^>]*>\s*Dodatkowe informacje:\s*</h[23]>": "Dodatkowe informacje:"
     }
+    if box_contents:
+        required_sections[r"<h[23][^>]*>\s*Zawartość pudełka:\s*</h[23]>"] = "Zawartość pudełka:"
     
     for regex, section_name in required_sections.items():
         if not re.search(regex, html_desc, re.IGNORECASE):
@@ -302,6 +309,8 @@ def validate_generated_content(
     if is_preorder:
         if "Orientacyjna premiera" not in html_desc:
             warnings.append("Produkt w przedsprzedaży, ale w opisie HTML brakuje pozycji 'Orientacyjna premiera'.")
+        if re.search(r"<li[^>]*>\s*(?:<strong>)?\s*Przedsprzedaż\s*:?\s*(?:</strong>)?\s*(?:tak|yes|true)?\s*</li>", html_desc, re.IGNORECASE):
+            warnings.append("W sekcji dodatkowych informacji nie dodawaj osobnego punktu 'Przedsprzedaż: tak'; użyj tylko pozycji 'Orientacyjna premiera'.")
         if not seo_title.startswith("Przedsprzedaż"):
             warnings.append("Produkt w przedsprzedaży, ale tytuł SEO nie rozpoczyna się od słowa 'Przedsprzedaż'.")
             

@@ -67,6 +67,42 @@ def test_h3_sections_are_accepted_for_legacy_html():
 
     assert not any("HTML nie zawiera wymaganej sekcji" in w for w in warnings)
 
+def test_box_contents_section_is_required_only_when_contents_exist():
+    short_desc = "Krótki opis"
+    meta_desc = "To jest przykładowy meta opis o odpowiedniej długości, przygotowany wyłącznie na potrzeby testu walidatora."
+    seo_title = "Testowa gra planszowa"
+    html_desc = (
+        "<h2>Krótko o grze</h2>"
+        "<h2>Na czym polega rozgrywka?</h2>"
+        "<h2>Dlaczego warto?</h2>"
+        "<h2>Dodatkowe informacje:</h2>"
+    )
+    additional_info = {"players": "2-4", "age": "10+", "play_time": "30-60"}
+    fact_sources = {"players": "http://test.com", "age": "http://test.com", "play_time": "http://test.com"}
+
+    warnings_without_contents = validate_generated_content(
+        short_desc, meta_desc, seo_title, html_desc, False, additional_info, fact_sources, box_contents=[]
+    )
+    warnings_with_contents = validate_generated_content(
+        short_desc, meta_desc, seo_title, html_desc, False, additional_info, fact_sources, box_contents=["1 plansza"]
+    )
+
+    assert not any("Zawartość pudełka" in w for w in warnings_without_contents)
+    assert any("Zawartość pudełka" in w for w in warnings_with_contents)
+
+def test_source_reference_phrases_are_forbidden():
+    warnings = validate_generated_content(
+        "Krótki opis",
+        "To jest przykładowy meta opis o odpowiedniej długości, przygotowany wyłącznie na potrzeby testu walidatora.",
+        "Testowa gra planszowa",
+        "<h2>Krótko o grze</h2><p>W oficjalnym opisie gra ma dużo taktyki.</p>",
+        False,
+        {"players": "2-4", "age": "10+", "play_time": "30-60"},
+        {"players": "http://test.com", "age": "http://test.com", "play_time": "http://test.com"},
+    )
+
+    assert any("w oficjalnym opisie" in w for w in warnings)
+
 def test_conflict_resolution():
     # Setup sources with different values for key parameters
     sources_analysis = [

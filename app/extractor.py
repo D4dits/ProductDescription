@@ -43,7 +43,7 @@ Podane przez użytkownika informacje pomocnicze:
 - Własny link do oficjalnej strony: {official_link}
 - Własny link do instrukcji PDF: {manual_link}
 
-Poniżej znajdują się pobrane treści stron internetowych (maksymalnie 4000 znaków na stronę).
+Poniżej znajdują się pobrane treści stron internetowych i instrukcji PDF.
 Przeanalizuj każdą z nich i wyodrębnij fakty.
 
 {sources_text}
@@ -93,9 +93,12 @@ def extract_facts(game_name: str, sources: list, user_inputs: dict = None) -> di
     sources_text_list = []
     for src in sources:
         # Cap text size to avoid bloating prompt
-        body_capped = src.get("body", "")[:4000]
+        source_type = src.get("source_type")
+        char_limit = 10000 if source_type == "manual_pdf" else 4000
+        body_capped = src.get("body", "")[:char_limit]
         sources_text_list.append(
             f"--- ŹRÓDŁO: {src.get('url')} ---\n"
+            f"Typ źródła: {source_type}\n"
             f"Tytuł strony: {src.get('title')}\n"
             f"Zawartość:\n{body_capped}\n"
         )

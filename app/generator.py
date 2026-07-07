@@ -20,17 +20,21 @@ Zasady kluczowe:
 3. Rotuj style rozpoczęcia opisu (od klimatu, celu gry, sytuacji przy stole, mechaniki, grupy docelowej lub pytania).
 4. Nie zaczynaj opisu od słów "To gra...", "Ta gra..." ani podobnych szablonowych zwrotów.
 5. Sekcja "Dlaczego warto?" musi zawierać 3-5 krótkich, konkretnych zalet gry bez powtarzania tych samych słów i bez ogólników.
-6. Jeśli produkt to Przedsprzedaż, tytuł SEO musi zaczynać się od słowa "Przedsprzedaż", a w danych technicznych i opisie musi pojawić się informacja o orientacyjnej premierze bez obiecywania sztywnej daty dostawy.
+6. Jeśli produkt to Przedsprzedaż, tytuł SEO musi zaczynać się od słowa "Przedsprzedaż", a w sekcji "Dodatkowe informacje" musi pojawić się pozycja "Orientacyjna premiera: ..." bez obiecywania sztywnej daty dostawy. Nie dodawaj osobnego punktu "Przedsprzedaż: tak".
 7. HTML musi posiadać ścisłą strukturę z nagłówkami <h2> i listami <ul>.
 8. Zwróć wyłącznie poprawny JSON. Wartości tekstowe nie mogą zawierać nieucieczonych cudzysłowów podwójnych; w treści używaj apostrofów albo encji HTML &quot;.
 9. Tytuł SEO ma kończyć się nazwą marki: | Graszki.pl.
 10. Opis skrócony i meta opis muszą być jedną linią tekstu, bez znaków nowej linii.
+11. Nie pisz w treści zwrotów typu "w oficjalnym opisie", "na stronie producenta", "według wydawcy" ani podobnych odniesień do źródeł. Opis ma brzmieć jak własny opis sklepu.
 """
 
 GENERATOR_PROMPT_TEMPLATE = """Przygotuj zestaw treści dla gry planszowej: {game_name}
 
 Dane techniczne i fakty (użyj tylko tych zweryfikowanych):
 {facts_text}
+
+Dodatkowy kontekst źródłowy do opisu (może zawierać fragmenty instrukcji PDF, używaj tylko informacji obecnych w tym tekście):
+{source_context_text}
 
 Parametry wejściowe od użytkownika:
 - Oryginalny tytuł: {original_title}
@@ -54,26 +58,26 @@ Wymagane sekcje w opisie rozszerzonym HTML:
 
 {group_docelowa_html}
 
-5. <h2>Zawartość pudełka:</h2>
-   <ul>
-   <li>Elementy pudełka (każdy element jako osobny punkt <li>).</li>
-   </ul>
+{box_contents_html}
 
 6. <h2>Dodatkowe informacje:</h2>
    <ul>
-   <li>Wydawca: ...</li>
-   <li>Projektant: ...</li>
+   <li><strong>Wydawca:</strong> ...</li>
+   <li><strong>Autor:</strong> ...</li>
    {illustrator_li}
-   <li>Wydanie: {edition_language}</li>
-   <li>Instrukcja: {manual_language}</li>
-   <li>Liczba graczy: {players}</li>
-   <li>Zalecany wiek: {age}</li>
-   <li>Czas rozgrywki: {play_time} minut</li>
+   <li><strong>Wydanie:</strong> {edition_language}</li>
+   <li><strong>Instrukcja:</strong> {manual_language}</li>
+   <li><strong>Liczba graczy:</strong> {players}</li>
+   <li><strong>Zalecany wiek:</strong> {age}</li>
+   <li><strong>Czas gry:</strong> {play_time}</li>
    {preorder_li}
    {pdf_manual_li}
    </ul>
 
 *Ważne*: Jeśli dany parametr w sekcji "Dodatkowe informacje" (np. ilustrator, projektant, instrukcja PDF) jest pusty lub nieznany, POMIŃ go w wyjściowym HTML (nie wstawiaj pustego punktu <li>).
+*Ważne*: Lewa strona każdego punktu w sekcji "Dodatkowe informacje" musi być pogrubiona znacznikiem <strong>, np. <li><strong>Autor:</strong> Imię Nazwisko</li>.
+*Ważne*: Sekcję "Zawartość pudełka:" dodaj tylko wtedy, gdy masz pełną potwierdzoną listę elementów. Jeśli zawartość nie jest dostępna, ukryj całą sekcję i nie dodawaj pustej listy.
+*Ważne*: Nie używaj w opisach sformułowań odwołujących się do źródeł, np. "w oficjalnym opisie", "na stronie producenta", "według wydawcy". To ma być własny opis sklepu.
 *Ważne dla JSON*: Nie używaj surowych znaków " wewnątrz wartości tekstowych. Jeśli musisz zacytować nazwę lub termin, użyj apostrofu albo encji &quot;. Atrybuty HTML zapisuj z apostrofami, np. <a href='https://...'>.
 
 Zwróć wynik jako obiekt JSON o następującej strukturze:
@@ -90,7 +94,14 @@ def normalize_single_line_text(value: str) -> str:
     """Collapse whitespace so metadata copies cleanly into shop fields."""
     if value is None:
         return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
+    text = BeautifulSoup(str(value), "html.parser").get_text(" ")
+    return re.sub(r"\s+", " ", text).strip()
+
+def normalize_release_note(value: str) -> str:
+    """Return a display-ready release note without duplicated label text."""
+    normalized = normalize_single_line_text(value)
+    normalized = re.sub(r"^\s*(?:premiera\s+orientacyjna|orientacyjna\s+premiera)\s*:\s*", "", normalized, flags=re.IGNORECASE)
+    return normalized.strip()
 
 def apply_seo_brand_suffix(title: str) -> str:
     """Append Graszki.pl while keeping the SEO title within the validator limit."""
@@ -112,10 +123,210 @@ def apply_seo_brand_suffix(title: str) -> str:
 
 def normalize_product_metadata(product_data: dict) -> dict:
     """Normalize copy-sensitive metadata fields in-place and return the dict."""
+    product_data["product_name"] = normalize_single_line_text(product_data.get("product_name", ""))
+    product_data["original_title"] = normalize_single_line_text(product_data.get("original_title", ""))
+    product_data["release_date_note"] = normalize_single_line_text(product_data.get("release_date_note", ""))
     product_data["short_description"] = normalize_single_line_text(product_data.get("short_description", ""))
     product_data["meta_description"] = normalize_single_line_text(product_data.get("meta_description", ""))
     product_data["seo_title"] = apply_seo_brand_suffix(product_data.get("seo_title", ""))
+    if isinstance(product_data.get("tags"), list):
+        product_data["tags"] = [normalize_single_line_text(tag) for tag in product_data["tags"] if normalize_single_line_text(tag)]
+    if isinstance(product_data.get("box_contents"), list):
+        product_data["box_contents"] = [normalize_single_line_text(item) for item in product_data["box_contents"] if normalize_single_line_text(item)]
+    if isinstance(product_data.get("additional_info"), dict):
+        product_data["additional_info"] = {
+            key: normalize_single_line_text(value)
+            for key, value in product_data["additional_info"].items()
+        }
     return product_data
+
+def _heading_text(tag) -> str:
+    return re.sub(r"\s+", " ", tag.get_text(" ", strip=True)).strip().rstrip(":").lower()
+
+def _remove_section_by_heading(soup: BeautifulSoup, section_name: str) -> None:
+    target = section_name.strip().rstrip(":").lower()
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) != target:
+            continue
+        current = heading.next_sibling
+        while current:
+            next_node = current.next_sibling
+            if getattr(current, "name", None) in {"h1", "h2", "h3", "h4"}:
+                break
+            current.extract()
+            current = next_node
+        heading.extract()
+        break
+
+def _bold_additional_info_labels(soup: BeautifulSoup) -> None:
+    heading = None
+    for candidate in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(candidate) == "dodatkowe informacje":
+            heading = candidate
+            break
+    if not heading:
+        return
+
+    section_nodes = []
+    current = heading.next_sibling
+    while current:
+        if getattr(current, "name", None) in {"h1", "h2", "h3", "h4"}:
+            break
+        section_nodes.append(current)
+        current = current.next_sibling
+
+    info_items = []
+    for node in section_nodes:
+        if getattr(node, "name", None) == "ul":
+            info_items.extend(node.find_all("li", recursive=False))
+
+    for li in info_items:
+        text = li.get_text(" ", strip=True)
+        if not text or ":" not in text:
+            continue
+        label, value = text.split(":", 1)
+        label = label.strip()
+        value = value.strip()
+        if not label:
+            continue
+        li.clear()
+        strong = soup.new_tag("strong")
+        strong.string = f"{label}:"
+        li.append(strong)
+        if value:
+            li.append(f" {value}")
+
+ADDITIONAL_INFO_LABELS = [
+    "Autor",
+    "Projektant",
+    "Wydawca",
+    "Ilustrator",
+    "Ilustracje",
+    "Wydanie",
+    "Instrukcja PDF",
+    "Instrukcja",
+    "Liczba graczy",
+    "Zalecany wiek",
+    "Wiek",
+    "Czas gry",
+    "Czas rozgrywki",
+    "Orientacyjna premiera",
+    "Wymagana gra podstawowa",
+    "Uwaga",
+]
+
+def _split_additional_info_text(text: str) -> list[tuple[str, str]]:
+    normalized = normalize_single_line_text(text)
+    if not normalized:
+        return []
+
+    labels_pattern = "|".join(re.escape(label) for label in sorted(ADDITIONAL_INFO_LABELS, key=len, reverse=True))
+    pattern = re.compile(rf"(?<!\w)({labels_pattern})\s*:", re.IGNORECASE)
+    matches = list(pattern.finditer(normalized))
+    items = []
+    for idx, match in enumerate(matches):
+        label = match.group(1).strip()
+        value_start = match.end()
+        value_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(normalized)
+        value = normalized[value_start:value_end].strip()
+        if label and value:
+            items.append((label, value))
+    return items
+
+def _repair_additional_info_list(soup: BeautifulSoup) -> None:
+    heading = None
+    for candidate in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(candidate) == "dodatkowe informacje":
+            heading = candidate
+            break
+    if not heading:
+        return
+
+    ul = heading.find_next_sibling("ul")
+    if not ul:
+        return
+
+    repaired = []
+    changed = False
+    for li in ul.find_all("li", recursive=False):
+        text = li.get_text(" ", strip=True)
+        split_items = _split_additional_info_text(text)
+        if len(split_items) > 1:
+            repaired.extend(split_items)
+            changed = True
+        elif split_items:
+            repaired.extend(split_items)
+        elif text:
+            repaired.append(("", text))
+
+    if not changed:
+        return
+
+    ul.clear()
+    for label, value in repaired:
+        if not label:
+            li = soup.new_tag("li")
+            li.string = value
+            ul.append(li)
+            continue
+        li = soup.new_tag("li")
+        strong = soup.new_tag("strong")
+        strong.string = f"{label}:"
+        li.append(strong)
+        li.append(f" {value}")
+        ul.append(li)
+
+def _remove_preorder_status_items(soup: BeautifulSoup) -> None:
+    for li in soup.find_all("li"):
+        text = re.sub(r"\s+", " ", li.get_text(" ", strip=True)).strip().lower()
+        normalized = text.replace(":", " ")
+        if normalized.startswith("przedsprzedaż ") or normalized.startswith("przedsprzedaz "):
+            li.extract()
+
+def _ensure_preorder_release_info(soup: BeautifulSoup, release_date_note: str) -> None:
+    release_text = normalize_release_note(release_date_note) or "brak potwierdzonej daty"
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) != "dodatkowe informacje":
+            continue
+        ul = heading.find_next_sibling("ul")
+        if not ul:
+            return
+        for li in ul.find_all("li", recursive=False):
+            text = li.get_text(" ", strip=True).lower()
+            if text.startswith("orientacyjna premiera"):
+                li.clear()
+                strong = soup.new_tag("strong")
+                strong.string = "Orientacyjna premiera:"
+                li.append(strong)
+                li.append(f" {release_text}")
+                return
+        li = soup.new_tag("li")
+        strong = soup.new_tag("strong")
+        strong.string = "Orientacyjna premiera:"
+        li.append(strong)
+        li.append(f" {release_text}")
+        ul.append(li)
+        return
+
+def normalize_description_html(
+    html_content: str,
+    box_contents: list | None = None,
+    is_preorder: bool = False,
+    release_date_note: str = "",
+) -> str:
+    """Apply shop formatting rules that should not depend on model compliance."""
+    if not html_content:
+        return ""
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    if not box_contents:
+        _remove_section_by_heading(soup, "Zawartość pudełka")
+    _remove_preorder_status_items(soup)
+    _repair_additional_info_list(soup)
+    if is_preorder:
+        _ensure_preorder_release_info(soup, release_date_note)
+    _bold_additional_info_labels(soup)
+    return str(soup)
 
 def apply_legacy_inline_styles(html_content: str) -> str:
     """
@@ -204,10 +415,47 @@ def format_facts_as_text(facts: dict) -> str:
                 lines.append(f"- {k}: {v}")
     return "\n".join(lines)
 
+def format_source_context_for_generation(sources: list | None, max_total_chars: int = 12000) -> str:
+    """Prepare source excerpts for copy generation, prioritizing manuals and official pages."""
+    if not sources:
+        return "Brak dodatkowego kontekstu źródłowego."
+
+    priority = {
+        "manual_pdf": 0,
+        "publisher": 1,
+        "official": 2,
+        "distributor": 3,
+        "bgg": 4,
+        "shop": 5,
+        "review": 6,
+        "other": 7,
+    }
+    sorted_sources = sorted(sources, key=lambda src: priority.get(src.get("source_type"), 99))
+    excerpts = []
+    used_chars = 0
+
+    for src in sorted_sources:
+        body = normalize_single_line_text(src.get("body", ""))
+        if not body:
+            continue
+        remaining = max_total_chars - used_chars
+        if remaining <= 0:
+            break
+        per_source_limit = 6000 if src.get("source_type") == "manual_pdf" else 3000
+        excerpt = body[: min(per_source_limit, remaining)]
+        excerpts.append(
+            f"--- {src.get('source_type', 'other')} | {src.get('title') or src.get('url')} ---\n"
+            f"{excerpt}"
+        )
+        used_chars += len(excerpt)
+
+    return "\n\n".join(excerpts) if excerpts else "Brak dodatkowego kontekstu źródłowego."
+
 def generate_descriptions(
     game_name: str,
     resolved_facts: dict,
     user_inputs: dict,
+    source_context: list | None = None,
     force_tone: str = None,
     rewrite_instruction: str = None
 ) -> dict:
@@ -217,6 +465,7 @@ def generate_descriptions(
     """
     # 1. Prepare facts for prompt
     facts_text = format_facts_as_text(resolved_facts)
+    source_context_text = format_source_context_for_generation(source_context)
     
     # 2. Get tone instruction
     tone = force_tone or user_inputs.get("tone_preference", "sales")
@@ -244,16 +493,26 @@ def generate_descriptions(
     # 4. Handle optional details in technical specs HTML
     illustrator_li = ""
     if resolved_facts.get("illustrator"):
-        illustrator_li = "<li>Ilustrator: ...</li>"
+        illustrator_li = "<li><strong>Ilustrator:</strong> ...</li>"
         
     is_preorder = user_inputs.get("is_preorder", False)
     preorder_li = ""
     if is_preorder:
-        preorder_li = "<li>Orientacyjna premiera: ...</li>"
+        preorder_li = "<li><strong>Orientacyjna premiera:</strong> ...</li>"
         
     pdf_manual_li = ""
     if resolved_facts.get("instruction_pdf"):
-        pdf_manual_li = "<li>Instrukcja PDF: link</li>"
+        pdf_manual_li = "<li><strong>Instrukcja PDF:</strong> link</li>"
+        
+    box_contents = resolved_facts.get("box_contents") or []
+    box_contents_html = ""
+    if box_contents:
+        box_contents_html = (
+            "5. <h2>Zawartość pudełka:</h2>\n"
+            "   <ul>\n"
+            "   <li>Pełna potwierdzona lista elementów pudełka, każdy element jako osobny punkt <li>.</li>\n"
+            "   </ul>"
+        )
         
     # 5. Build extra prompts
     additional_prompt_instruction = ""
@@ -264,6 +523,7 @@ def generate_descriptions(
     prompt = GENERATOR_PROMPT_TEMPLATE.format(
         game_name=game_name,
         facts_text=facts_text,
+        source_context_text=source_context_text,
         original_title=user_inputs.get("original_title", ""),
         is_preorder="Tak" if is_preorder else "Nie",
         category=user_inputs.get("category", ""),
@@ -271,6 +531,7 @@ def generate_descriptions(
         tone_instruction=tone_instruction,
         additional_prompt_instruction=additional_prompt_instruction,
         group_docelowa_html=group_docelowa_html,
+        box_contents_html=box_contents_html,
         illustrator_li=illustrator_li,
         edition_language=resolved_facts.get("edition_language") or "polskie",
         manual_language=resolved_facts.get("manual_language") or "polska",
@@ -297,7 +558,13 @@ def generate_descriptions(
         normalize_product_metadata(result)
         
         # Post-process HTML for inline styles if requested
-        html_content = result.get("extended_description_html", "")
+        html_content = normalize_description_html(
+            result.get("extended_description_html", ""),
+            box_contents=box_contents,
+            is_preorder=is_preorder,
+            release_date_note=resolved_facts.get("release_date") or user_inputs.get("release_date_note", ""),
+        )
+        result["extended_description_html"] = html_content
         
         # Check similarity with existing output files
         # Only perform the check if we're not already rewriting
@@ -315,6 +582,7 @@ def generate_descriptions(
                     game_name=game_name,
                     resolved_facts=resolved_facts,
                     user_inputs=user_inputs,
+                    source_context=source_context,
                     force_tone=force_tone,
                     rewrite_instruction=rewrite_msg
                 )

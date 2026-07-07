@@ -1,3 +1,5 @@
+import re
+
 from app.config import SCRAPE_PAGES_LIMIT
 from app.logger import logger
 from app.bgg import fetch_bgg_data
@@ -8,8 +10,23 @@ from app.validator import resolve_facts_conflicts, validate_generated_content
 from app.generator import generate_descriptions, normalize_product_metadata
 from app.exporter import export_results
 
+def _normalize_preorder_prefix(product_name: str) -> str:
+    """Normalize common typos in the leading preorder marker."""
+    if not product_name:
+        return ""
+    return re.sub(
+        r"^\s*(?:przedsprzedaz|przedsprzedaż|pzedsprzedaż|pzedsprzedaz|przedpsrzedaż|przedpsrzedaz)\s+",
+        "Przedsprzedaż ",
+        product_name.strip(),
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
 def _collect_sources(user_inputs: dict) -> dict:
-    game_name = user_inputs.get("product_name", "").strip()
+    raw_game_name = user_inputs.get("product_name", "").strip()
+    game_name = _normalize_preorder_prefix(raw_game_name)
+    if game_name != raw_game_name:
+        user_inputs["product_name"] = game_name
     if not game_name:
         raise ValueError("Nazwa produktu jest wymagana.")
 
@@ -88,7 +105,8 @@ def _collect_sources(user_inputs: dict) -> dict:
                 "url": u["url"],
                 "title": res.get("title") or u["title"],
                 "source_type": u["source_type"],
-                "body": res.get("body", "")
+                "body": res.get("body", ""),
+                "local_pdf_path": res.get("local_pdf_path", "")
             })
             
     # Include BGG structured text in scraper output to help extractor
@@ -118,6 +136,173 @@ def _collect_sources(user_inputs: dict) -> dict:
         "found_urls": found_urls,
     }
 
+def _clean_source_text_for_prompt(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+def _trim_at_word_boundary(text: str, limit: int) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    trimmed = text[:limit].rstrip()
+    if "\n" in trimmed[-200:]:
+        trimmed = trimmed.rsplit("\n", 1)[0].rstrip()
+    elif " " in trimmed:
+        trimmed = trimmed.rsplit(" ", 1)[0].rstrip()
+    return f"{trimmed}\n[... dalsza część źródła pominięta w promptcie ...]", True
+
+def _line_looks_like_toc_entry(line: str) -> bool:
+    return bool(re.search(r"\s\d{1,3}$", line.strip()))
+
+def _collect_lines_after_heading(lines: list[str], heading_pattern: str, max_lines: int = 8) -> list[str]:
+    for idx, line in enumerate(lines):
+        if not re.fullmatch(heading_pattern, line.strip(), flags=re.IGNORECASE):
+            continue
+        collected = []
+        for candidate in lines[idx + 1:]:
+            candidate = candidate.strip()
+            if not candidate or _line_looks_like_toc_entry(candidate):
+                continue
+            if collected and re.fullmatch(r"[A-ZĄĆĘŁŃÓŚŹŻ0-9 ,:/\-]{4,}", candidate):
+                break
+            collected.append(candidate)
+            if len(collected) >= max_lines:
+                break
+        if collected:
+            return collected
+    return []
+
+def _collect_keyword_sentences(text: str, keywords: list[str], max_sentences: int = 5) -> list[str]:
+    single_line = re.sub(r"\s+", " ", text)
+    sentence_candidates = re.split(r"(?<=[.!?])\s+", single_line)
+    results = []
+    seen = set()
+    for sentence in sentence_candidates:
+        sentence = sentence.strip()
+        lowered = sentence.lower()
+        if len(sentence) < 30 or sentence in seen:
+            continue
+        if "spis treści" in lowered or "spis tresci" in lowered:
+            continue
+        if any(keyword.lower() in lowered for keyword in keywords):
+            results.append(sentence)
+            seen.add(sentence)
+        if len(results) >= max_sentences:
+            break
+    return results
+
+def _build_manual_pdf_summary(body: str, limit: int = 1800) -> tuple[str, bool]:
+    text = _clean_source_text_for_prompt(body)
+    if not text:
+        return "", False
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    blocks = []
+
+    components = _collect_lines_after_heading(lines, r"(komponenty|zawartość)", max_lines=6)
+    if components:
+        narrative_starts = ("gdy ", "northvale ", "opis gry", "główne założenia", "glowne zalozenia")
+        cleaned_components = []
+        for line in components:
+            if line.lower().startswith(narrative_starts):
+                break
+            cleaned_components.append(line)
+        components = cleaned_components
+    if components:
+        blocks.append("Komponenty: " + " ".join(components))
+
+    description_sentences = _collect_keyword_sentences(
+        text,
+        ["to rozszerzenie", "to gra", "gracze wcielają", "rozszerzenie wprowadza", "przebieg rozgrywki pozostaje"],
+        max_sentences=4,
+    )
+    if description_sentences:
+        blocks.append("Opis/założenia: " + " ".join(description_sentences))
+
+    mechanics = []
+    for heading in [
+        r"(nowe regiony)",
+        r"(nowe smoki)",
+        r"(specjalne zdolności)",
+        r"(nowe zdolności wroga)",
+        r"(nowe niebezpieczeństwa wyprawy)",
+    ]:
+        section_lines = _collect_lines_after_heading(lines, heading, max_lines=4)
+        if section_lines:
+            mechanics.append(" ".join(section_lines))
+    if mechanics:
+        blocks.append("Mechaniki/nowości: " + " ".join(mechanics[:3]))
+
+    important_notes = _collect_keyword_sentences(
+        text,
+        ["nie można", "wymaga", "zastępują", "zastępuje", "polecamy", "wariant"],
+        max_sentences=3,
+    )
+    if important_notes:
+        blocks.append("Uwagi: " + " ".join(important_notes))
+
+    creators = _collect_lines_after_heading(lines, r"twórcy", max_lines=10)
+    if creators:
+        blocks.append("Twórcy: " + " ".join(creators))
+
+    if not blocks:
+        return _trim_at_word_boundary(text, limit)
+
+    joined = "\n\n".join(blocks)
+    excerpt, truncated_by_limit = _trim_at_word_boundary(joined, limit)
+    return excerpt, truncated_by_limit or len(joined) < len(text)
+
+def _build_source_excerpt(src: dict, limit: int = 7000) -> tuple[str, bool]:
+    body = src.get("body") or ""
+    if src.get("source_type") == "manual_pdf":
+        return _build_manual_pdf_summary(body)
+    return _trim_at_word_boundary(_clean_source_text_for_prompt(body), limit)
+
+def _format_source_for_codex_prompt(idx: int, src: dict) -> str:
+    source_type = src.get("source_type")
+    if source_type == "manual_pdf":
+        summary, was_truncated = _build_manual_pdf_summary(src.get("body") or "")
+        original_len = len(src.get("body") or "")
+        local_path = src.get("local_pdf_path") or ""
+        path_line = f"- Lokalny plik PDF: {local_path}\n" if local_path else "- Lokalny plik PDF: nie udało się zapisać pliku lokalnie\n"
+        note = (
+            "- Uwaga: nie wklejam pełnej instrukcji do promptu. "
+            "Jeśli potrzebujesz dokładnego faktu, odczytaj lokalny PDF ze ścieżki powyżej.\n"
+        )
+        if summary:
+            note += f"- Automatyczny wyciąg pomocniczy: krótka lista faktów z tekstu PDF ({len(summary)} znaków, pełny tekst ma {original_len} znaków).\n"
+        return (
+            f"### ŹRÓDŁO {idx}\n"
+            f"- URL: {src.get('url')}\n"
+            f"- Tytuł: {src.get('title')}\n"
+            f"- Typ źródła: {source_type}\n"
+            f"{path_line}"
+            f"{note}"
+            f"- Wyciąg pomocniczy:\n{summary or '[PDF zapisany lokalnie, ale nie udało się wyciągnąć tekstu automatycznie.]'}\n"
+        )
+
+    body, was_truncated = _build_source_excerpt(src)
+    original_len = len(src.get("body") or "")
+    if body and was_truncated:
+        source_note = (
+            f"- Uwaga: treść źródła została skrócona ({len(body)} z {original_len} znaków).\n"
+        )
+    elif body:
+        source_note = f"- Uwaga: pokazano pełną pobraną treść źródła ({len(body)} znaków).\n"
+    else:
+        source_note = ""
+    return (
+        f"### ŹRÓDŁO {idx}\n"
+        f"- URL: {src.get('url')}\n"
+        f"- Tytuł: {src.get('title')}\n"
+        f"- Typ źródła: {source_type}\n"
+        f"{source_note}"
+        f"- Treść:\n{body or '[Nie udało się pobrać tekstu z tego źródła.]'}\n"
+    )
+
 def build_codex_prompt_package(user_inputs: dict) -> dict:
     """
     Collects sources and returns a copy-ready prompt for Codex/ChatGPT.
@@ -131,14 +316,7 @@ def build_codex_prompt_package(user_inputs: dict) -> dict:
 
     sources_text = []
     for idx, src in enumerate(scraped_sources, start=1):
-        body = (src.get("body") or "")[:6000]
-        sources_text.append(
-            f"### ŹRÓDŁO {idx}\n"
-            f"- URL: {src.get('url')}\n"
-            f"- Tytuł: {src.get('title')}\n"
-            f"- Typ źródła: {src.get('source_type')}\n"
-            f"- Treść:\n{body or '[PDF lub źródło bez pobranej treści tekstowej]'}\n"
-        )
+        sources_text.append(_format_source_for_codex_prompt(idx, src))
 
     expected_json = """{
   "product_name": "Nazwa produktu w sklepie",
@@ -193,12 +371,15 @@ Zasady:
 1. Pisz wyłącznie po polsku.
 2. Bazuj tylko na źródłach i parametrach poniżej. Nie wymyślaj faktów technicznych.
 3. Rozstrzygaj konflikty według priorytetu: oficjalny wydawca/dystrybutor, instrukcja PDF, BGG, sklepy, recenzje.
-4. Opis HTML ma zawierać sekcje: <h2>Krótko o grze</h2>, <h2>Na czym polega rozgrywka?</h2>, <h2>Dlaczego warto?</h2>, <h2>Zawartość pudełka:</h2>, <h2>Dodatkowe informacje:</h2>. Sekcja <h2>Dla kogo będzie dobra?</h2> jest opcjonalna, gdy pasuje do produktu.
+4. Opis HTML ma zawierać sekcje: <h2>Krótko o grze</h2>, <h2>Na czym polega rozgrywka?</h2>, <h2>Dlaczego warto?</h2>, <h2>Dodatkowe informacje:</h2>. Sekcja <h2>Dla kogo będzie dobra?</h2> jest opcjonalna, gdy pasuje do produktu. Sekcję <h2>Zawartość pudełka:</h2> dodaj tylko wtedy, gdy źródła podają pełną potwierdzoną listę elementów; jeśli jej brakuje, ukryj całą sekcję.
 5. Nie używaj agresywnych obietnic typu "najlepsza gra na rynku", "gwarantowana premiera", "najtańsza oferta".
 6. Jeśli brakuje ważnych danych, zostaw pusty string i dodaj ostrzeżenie w polu warnings.
 7. Tytuł SEO zakończ frazą: | Graszki.pl.
 8. Meta opis i opis skrócony zwróć jako jedną linię tekstu, bez załamań linii.
-9. Odpowiedz wyłącznie poprawnym JSON-em, bez markdown i bez komentarzy.
+9. W sekcji <h2>Dodatkowe informacje:</h2> używaj listy <ul>, a lewą stronę każdego punktu pogrubiaj znacznikiem <strong>, np. <li><strong>Autor:</strong> Jan Kowalski</li>.
+10. Jeśli produkt jest w przedsprzedaży albo nazwa zawiera "Przedsprzedaż", w sekcji "Dodatkowe informacje" dodaj <li><strong>Orientacyjna premiera:</strong> ...</li>. Nie dodawaj punktu "Przedsprzedaż: tak".
+11. Nie pisz zwrotów typu "w oficjalnym opisie", "na stronie producenta", "według wydawcy" ani podobnych odniesień do źródeł. To są własne opisy sklepu.
+12. Odpowiedz wyłącznie poprawnym JSON-em, bez markdown i bez komentarzy.
 
 Wymagana struktura JSON:
 {expected_json}
@@ -216,6 +397,7 @@ Wymagana struktura JSON:
                 "url": src.get("url"),
                 "title": src.get("title"),
                 "source_type": src.get("source_type"),
+                "local_pdf_path": src.get("local_pdf_path", ""),
                 "facts_found": [],
             }
             for src in scraped_sources
@@ -251,7 +433,8 @@ def run_generation_pipeline(user_inputs: dict) -> dict:
     generated = generate_descriptions(
         game_name=game_name,
         resolved_facts=resolved_facts,
-        user_inputs=user_inputs
+        user_inputs=user_inputs,
+        source_context=scraped_sources
     )
     
     # 8. Business Validation Checks
@@ -262,7 +445,8 @@ def run_generation_pipeline(user_inputs: dict) -> dict:
         html_desc=generated.get("extended_description_html", ""),
         is_preorder=is_preorder,
         additional_info=resolved_facts,
-        fact_sources=fact_sources
+        fact_sources=fact_sources,
+        box_contents=resolved_facts.get("box_contents", [])
     )
     
     # Combine warnings

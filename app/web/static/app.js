@@ -176,6 +176,204 @@ outExtendedDescriptionHtml.addEventListener("input", (e) => {
     htmlPreviewContainer.innerHTML = e.target.value;
 });
 
+function collapseWhitespace(value) {
+    return (value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeHeadingText(value) {
+    return collapseWhitespace(value).replace(/:$/, "").toLowerCase();
+}
+
+function createTextLi(doc, label, value) {
+    const cleanValue = collapseWhitespace(value);
+    if (!cleanValue) return null;
+
+    const li = doc.createElement("li");
+    const strong = doc.createElement("strong");
+    strong.textContent = `${label}:`;
+    li.appendChild(strong);
+    li.appendChild(doc.createTextNode(` ${cleanValue}`));
+    return li;
+}
+
+function findSectionHeading(root, sectionName) {
+    const target = normalizeHeadingText(sectionName);
+    const headings = root.querySelectorAll("h1, h2, h3, h4");
+    return Array.from(headings).find(h => normalizeHeadingText(h.textContent) === target) || null;
+}
+
+function getSectionNodes(heading) {
+    const nodes = [];
+    let node = heading ? heading.nextSibling : null;
+    while (node) {
+        if (node.nodeType === Node.ELEMENT_NODE && /^H[1-4]$/i.test(node.tagName)) break;
+        nodes.push(node);
+        node = node.nextSibling;
+    }
+    return nodes;
+}
+
+function removeSection(root, sectionName) {
+    const heading = findSectionHeading(root, sectionName);
+    if (!heading) return;
+    getSectionNodes(heading).forEach(node => node.remove());
+    heading.remove();
+}
+
+function getContentRoot(container) {
+    return container.querySelector("div.def[itemprop='description']") || container;
+}
+
+function createSectionHeading(doc, text, referenceHeading = null) {
+    const heading = doc.createElement(referenceHeading ? referenceHeading.tagName.toLowerCase() : "h2");
+    heading.textContent = text;
+    if (referenceHeading) {
+        heading.className = referenceHeading.className;
+        heading.setAttribute("style", referenceHeading.getAttribute("style") || "");
+    }
+    return heading;
+}
+
+function replaceListSection(root, sectionName, listItems, insertBeforeHeadingName = null) {
+    const doc = root.ownerDocument;
+    let heading = findSectionHeading(root, sectionName);
+    const referenceHeading = findSectionHeading(root, "Dodatkowe informacje") || root.querySelector("h1, h2, h3, h4");
+
+    if (!listItems.length) {
+        removeSection(root, sectionName);
+        return;
+    }
+
+    if (!heading) {
+        heading = createSectionHeading(doc, `${sectionName}:`, referenceHeading);
+        const insertBefore = insertBeforeHeadingName ? findSectionHeading(root, insertBeforeHeadingName) : null;
+        if (insertBefore) {
+            root.insertBefore(heading, insertBefore);
+        } else {
+            root.appendChild(heading);
+        }
+    } else {
+        getSectionNodes(heading).forEach(node => node.remove());
+    }
+
+    const ul = doc.createElement("ul");
+    listItems.forEach(item => ul.appendChild(item));
+    heading.insertAdjacentElement("afterend", ul);
+}
+
+function buildBoxContentItems(doc) {
+    return outBoxContents.value
+        .split("\n")
+        .map(line => collapseWhitespace(line))
+        .filter(Boolean)
+        .map(line => {
+            const li = doc.createElement("li");
+            li.textContent = line;
+            return li;
+        });
+}
+
+function buildAdditionalInfoItems(doc) {
+    const items = [];
+    const push = (label, value) => {
+        const li = createTextLi(doc, label, value);
+        if (li) items.push(li);
+    };
+
+    push("Autor", specDesigner.value);
+    push("Wydawca", specPublisher.value);
+    push("Ilustrator", specIllustrator.value);
+    push("Wydanie", specEditionLanguage.value);
+    push("Instrukcja", specManualLanguage.value);
+    push("Liczba graczy", specPlayers.value);
+    push("Zalecany wiek", specAge.value);
+    push("Czas gry", specPlayTime.value);
+    if (currentGameData && currentGameData.is_preorder) {
+        push("Orientacyjna premiera", specReleaseDate.value);
+    }
+    if (specInstructionPdf.value.trim()) {
+        const li = doc.createElement("li");
+        const strong = doc.createElement("strong");
+        const link = doc.createElement("a");
+        strong.textContent = "Instrukcja PDF:";
+        link.href = specInstructionPdf.value.trim();
+        link.textContent = "link";
+        link.target = "_blank";
+        li.appendChild(strong);
+        li.appendChild(doc.createTextNode(" "));
+        li.appendChild(link);
+        items.push(li);
+    }
+    return items;
+}
+
+const controlledAdditionalInfoLabels = new Set([
+    "autor",
+    "projektant",
+    "wydawca",
+    "ilustrator",
+    "ilustracje",
+    "wydanie",
+    "instrukcja",
+    "instrukcja pdf",
+    "liczba graczy",
+    "zalecany wiek",
+    "wiek",
+    "czas gry",
+    "czas rozgrywki",
+    "orientacyjna premiera"
+]);
+
+function getPreservedAdditionalInfoItems(root, doc) {
+    const heading = findSectionHeading(root, "Dodatkowe informacje");
+    if (!heading) return [];
+
+    const ul = getSectionNodes(heading).find(node => node.nodeType === Node.ELEMENT_NODE && node.tagName === "UL");
+    if (!ul) return [];
+
+    return Array.from(ul.querySelectorAll(":scope > li"))
+        .filter(li => {
+            const text = collapseWhitespace(li.textContent);
+            const label = normalizeHeadingText(text.split(":")[0] || "");
+            return label && !controlledAdditionalInfoLabels.has(label);
+        })
+        .map(li => doc.importNode(li, true));
+}
+
+function syncSpecsToHtml() {
+    if (!currentGameData || !outExtendedDescriptionHtml.value.trim()) return;
+
+    const container = document.createElement("div");
+    container.innerHTML = outExtendedDescriptionHtml.value;
+    const root = getContentRoot(container);
+    const preservedAdditionalItems = getPreservedAdditionalInfoItems(root, document);
+
+    replaceListSection(root, "Zawartość pudełka", buildBoxContentItems(document), "Dodatkowe informacje");
+    replaceListSection(root, "Dodatkowe informacje", [
+        ...buildAdditionalInfoItems(document),
+        ...preservedAdditionalItems
+    ]);
+
+    outExtendedDescriptionHtml.value = container.innerHTML;
+    htmlPreviewContainer.innerHTML = outExtendedDescriptionHtml.value;
+}
+
+[
+    outBoxContents,
+    specPublisher,
+    specDesigner,
+    specIllustrator,
+    specEditionLanguage,
+    specManualLanguage,
+    specPlayers,
+    specAge,
+    specPlayTime,
+    specInstructionPdf,
+    specReleaseDate
+].forEach(element => {
+    if (element) element.addEventListener("input", syncSpecsToHtml);
+});
+
 function setupCounter(inputElement, counterId) {
     const counter = document.getElementById(counterId);
     const update = () => {

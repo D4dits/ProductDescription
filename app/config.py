@@ -46,9 +46,11 @@ except ValueError:
 # Output, Cache, and Logs directories
 OUTPUT_DIR = BASE_DIR / "output"
 CACHE_DIR = BASE_DIR / "cache"
+PDF_CACHE_DIR = CACHE_DIR / "pdfs"
 LOGS_DIR = BASE_DIR / "logs"
 
 # Ensure directories exist
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
