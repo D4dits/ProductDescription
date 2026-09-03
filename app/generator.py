@@ -176,7 +176,7 @@ def resolve_producer_store_url(publisher: str) -> str:
     if not key:
         return ""
     producer_map = _load_producer_url_map()
-    return producer_map.get(key) or producer_map.get(key.replace("-", "")) or f"https://graszki.pl/{key}"
+    return producer_map.get(key) or producer_map.get(key.replace("-", ""))
 
 def _publisher_li(publisher: str) -> str:
     normalized = normalize_single_line_text(publisher)
@@ -419,6 +419,8 @@ def _link_publisher_items(soup: BeautifulSoup) -> None:
             if not publisher or _is_unknown_placeholder(publisher):
                 continue
             producer_url = resolve_producer_store_url(publisher)
+            if not producer_url:
+                continue
             li.clear()
             strong = soup.new_tag("strong")
             strong.string = "Wydawca:"

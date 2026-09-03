@@ -196,6 +196,22 @@ def test_normalize_description_html_links_publisher_and_renames_generic_manual_l
     assert '>patyko-instrukcja.pdf</a>' in normalized
     assert ">link</a>" not in normalized
 
+def test_normalize_description_html_keeps_unknown_publisher_unlinked():
+    html_input = (
+        "<h2>Dodatkowe informacje:</h2>"
+        "<ul><li>Wydawca: Nieznany Wydawca</li></ul>"
+    )
+
+    normalized = normalize_description_html(html_input)
+
+    assert "<strong>Wydawca:</strong> Nieznany Wydawca" in normalized
+    assert "<a " not in normalized
+
+def test_publisher_li_keeps_unknown_publisher_unlinked():
+    assert generator._publisher_li("Nieznany Wydawca") == (
+        "<li><strong>Wydawca:</strong> Nieznany Wydawca</li>"
+    )
+
 def test_format_source_context_prioritizes_manual_pdf():
     context = format_source_context_for_generation(
         [

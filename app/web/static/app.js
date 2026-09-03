@@ -237,7 +237,7 @@ function producerStoreUrl(publisher) {
         "smart-flamingo": "https://graszki.pl/Smart-Flamingo/pr/455",
         "ultra-pro": "https://graszki.pl/Ultra-Pro/pr/586",
     };
-    return slug ? (knownProducerUrls[slug] || `https://graszki.pl/${slug}`) : "";
+    return slug ? (knownProducerUrls[slug] || "") : "";
 }
 
 function createTextLi(doc, label, value) {
