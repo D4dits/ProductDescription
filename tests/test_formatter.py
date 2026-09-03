@@ -1,4 +1,5 @@
 import pytest
+import app.generator as generator
 from app.pipeline import _build_source_excerpt, _format_source_for_codex_prompt, _normalize_preorder_prefix
 from app.generator import (
     SEO_TITLE_MAX_LENGTH,
@@ -8,6 +9,14 @@ from app.generator import (
     normalize_description_html,
     normalize_product_metadata,
 )
+
+@pytest.fixture(autouse=True)
+def producer_url_cache(monkeypatch):
+    monkeypatch.setattr(generator, "_producer_url_cache", {
+        "meeplemood": "https://graszki.pl/meeplemood",
+        "portal": "https://graszki.pl/portal",
+        "rebel": "https://graszki.pl/rebel",
+    })
 
 def test_legacy_inline_styles():
     html_input = (
@@ -144,12 +153,48 @@ def test_normalize_description_html_repairs_merged_additional_info_items():
     )
 
     assert normalized.count("<li>") == 8
-    assert "<li><strong>Wydawca:</strong> Portal Games</li>" in normalized
+    assert '<li><strong>Wydawca:</strong> <a href="https://graszki.pl/portal">Portal Games</a></li>' in normalized
     assert "<li><strong>Ilustracje:</strong> Federico Pompili</li>" in normalized
     assert "<li><strong>Wydanie:</strong> polskie</li>" in normalized
     assert "<li><strong>Instrukcja:</strong> polska</li>" in normalized
     assert "<li><strong>Orientacyjna premiera:</strong> jesień 2026</li>" in normalized
     assert "Premiera orientacyjna: jesień 2026</li>" not in normalized
+
+def test_normalize_description_html_removes_unknown_additional_info_rows():
+    html_input = (
+        "<h2>Dodatkowe informacje:</h2>"
+        "<ul>"
+        "<li><strong>Wydawca:</strong> MeepleMood</li>"
+        "<li><strong>Liczba graczy:</strong> brak potwierdzonych danych</li>"
+        "<li><strong>Zalecany wiek:</strong> brak potweirdzonych danych</li>"
+        "<li><strong>Czas gry:</strong> brak danych</li>"
+        "</ul>"
+    )
+
+    normalized = normalize_description_html(html_input)
+
+    assert '<strong>Wydawca:</strong> <a href="https://graszki.pl/meeplemood">MeepleMood</a>' in normalized
+    assert "Liczba graczy" not in normalized
+    assert "Zalecany wiek" not in normalized
+    assert "Czas gry" not in normalized
+    assert "brak potwierdzonych danych" not in normalized
+    assert "brak potweirdzonych danych" not in normalized
+
+def test_normalize_description_html_links_publisher_and_renames_generic_manual_link():
+    html_input = (
+        "<h2>Dodatkowe informacje:</h2>"
+        "<ul>"
+        "<li>Wydawca: Rebel</li>"
+        "<li><strong>Instrukcja PDF:</strong> "
+        "<a href='https://example.com/download?id=123'>link</a></li>"
+        "</ul>"
+    )
+
+    normalized = normalize_description_html(html_input, game_name="Patyko")
+
+    assert '<strong>Wydawca:</strong> <a href="https://graszki.pl/rebel">Rebel</a>' in normalized
+    assert '>patyko-instrukcja.pdf</a>' in normalized
+    assert ">link</a>" not in normalized
 
 def test_format_source_context_prioritizes_manual_pdf():
     context = format_source_context_for_generation(

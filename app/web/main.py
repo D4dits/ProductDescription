@@ -109,6 +109,7 @@ def normalize_product_output(data: Dict[str, Any]) -> Dict[str, Any]:
         box_contents=box_contents,
         is_preorder=bool(data.get("is_preorder", False)),
         release_date_note=data.get("release_date_note", ""),
+        game_name=data.get("product_name", ""),
     )
 
     normalized = {
@@ -202,6 +203,7 @@ async def api_save_manual_edit(payload: SaveEditRequest):
             box_contents=product_data.get("box_contents", []),
             is_preorder=product_data.get("is_preorder", False),
             release_date_note=product_data.get("release_date_note", ""),
+            game_name=product_data.get("product_name", ""),
         )
         slug = export_results(product_data)
         return {"status": "success", "slug": slug, "message": "Poprawiona wersja została zapisana."}

@@ -184,9 +184,65 @@ function normalizeHeadingText(value) {
     return collapseWhitespace(value).replace(/:$/, "").toLowerCase();
 }
 
+function isUnknownPlaceholder(value) {
+    const normalized = collapseWhitespace(value)
+        .toLowerCase()
+        .replace(/[.:;,\-]+$/g, "")
+        .replace("potweirdzonych", "potwierdzonych");
+    return [
+        "brak danych",
+        "brak informacji",
+        "brak potwierdzenia",
+        "brak potwierdzonych danych",
+        "brak potwierdzonej informacji",
+        "brak potwierdzonych informacji",
+        "nieznane",
+        "nieznany",
+        "nieznana",
+        "nie ustalono",
+        "nie potwierdzono"
+    ].includes(normalized);
+}
+
+function slugifyStorePath(value) {
+    const withoutCompanySuffix = collapseWhitespace(value)
+        .replace(/\b(?:sp\.?\s*z\s*o\.?o\.?|s\.?a\.?|ltd\.?|inc\.?|games?)\b/gi, " ");
+    return withoutCompanySuffix
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+}
+
+function producerStoreUrl(publisher) {
+    const slug = slugifyStorePath(publisher);
+    const knownProducerUrls = {
+        "2-pionki": "https://graszki.pl/2-Pionki/pr/599",
+        "awaken-realms": "https://graszki.pl/Awaken-Realms/pr/608",
+        "board-dice": "https://graszki.pl/BoardDice/pr/73",
+        "fishbone": "https://graszki.pl/Fishbone-Game/pr/444",
+        "fishbone-game": "https://graszki.pl/Fishbone-Game/pr/444",
+        "gamegenic": "https://graszki.pl/Gamegenic/pr/603",
+        "goliath": "https://graszki.pl/Goliath-Games/pr/453",
+        "goliath-games": "https://graszki.pl/Goliath-Games/pr/453",
+        "lacerta": "https://graszki.pl/Lacerta/pr/12",
+        "lucky-duck": "https://graszki.pl/luckyduck",
+        "nasza-ksiegarnia": "https://graszki.pl/naszaksiegarnia",
+        "phalanx": "https://graszki.pl/Phalanx-Games/pr/62",
+        "phalanx-games": "https://graszki.pl/Phalanx-Games/pr/62",
+        "portal": "https://graszki.pl/portal",
+        "portal-games": "https://graszki.pl/portal",
+        "smart-flamingo": "https://graszki.pl/Smart-Flamingo/pr/455",
+        "ultra-pro": "https://graszki.pl/Ultra-Pro/pr/586",
+    };
+    return slug ? (knownProducerUrls[slug] || `https://graszki.pl/${slug}`) : "";
+}
+
 function createTextLi(doc, label, value) {
     const cleanValue = collapseWhitespace(value);
-    if (!cleanValue) return null;
+    if (!cleanValue || isUnknownPlaceholder(cleanValue)) return null;
 
     const li = doc.createElement("li");
     const strong = doc.createElement("strong");
@@ -194,6 +250,37 @@ function createTextLi(doc, label, value) {
     li.appendChild(strong);
     li.appendChild(doc.createTextNode(` ${cleanValue}`));
     return li;
+}
+
+function createPublisherLi(doc, publisher) {
+    const cleanValue = collapseWhitespace(publisher);
+    if (!cleanValue || isUnknownPlaceholder(cleanValue)) return null;
+
+    const producerUrl = producerStoreUrl(cleanValue);
+    if (!producerUrl) return createTextLi(doc, "Wydawca", cleanValue);
+
+    const li = doc.createElement("li");
+    const strong = doc.createElement("strong");
+    const link = doc.createElement("a");
+    strong.textContent = "Wydawca:";
+    link.href = producerUrl;
+    link.textContent = cleanValue;
+    li.appendChild(strong);
+    li.appendChild(doc.createTextNode(" "));
+    li.appendChild(link);
+    return li;
+}
+
+function manualPdfLinkLabel(gameName, manualUrl) {
+    try {
+        const url = new URL(manualUrl, window.location.href);
+        const pathName = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
+        if (pathName.toLowerCase().endsWith(".pdf")) return pathName;
+    } catch (_err) {
+        // Fall through to the generated display name for non-standard pasted values.
+    }
+    const gameSlug = slugifyStorePath(gameName);
+    return gameSlug ? `${gameSlug}-instrukcja.pdf` : "instrukcja.pdf";
 }
 
 function findSectionHeading(root, sectionName) {
@@ -281,7 +368,8 @@ function buildAdditionalInfoItems(doc) {
     };
 
     push("Autor", specDesigner.value);
-    push("Wydawca", specPublisher.value);
+    const publisherLi = createPublisherLi(doc, specPublisher.value);
+    if (publisherLi) items.push(publisherLi);
     push("Ilustrator", specIllustrator.value);
     push("Wydanie", specEditionLanguage.value);
     push("Instrukcja", specManualLanguage.value);
@@ -297,8 +385,9 @@ function buildAdditionalInfoItems(doc) {
         const link = doc.createElement("a");
         strong.textContent = "Instrukcja PDF:";
         link.href = specInstructionPdf.value.trim();
-        link.textContent = "link";
+        link.textContent = manualPdfLinkLabel(outProductName.value, specInstructionPdf.value.trim());
         link.target = "_blank";
+        link.rel = "noopener";
         li.appendChild(strong);
         li.appendChild(doc.createTextNode(" "));
         li.appendChild(link);

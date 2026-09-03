@@ -1,5 +1,10 @@
 import json
 import re
+import unicodedata
+import urllib.request
+from urllib.parse import unquote, urlparse
+import xml.etree.ElementTree as ET
+from html import escape
 from bs4 import BeautifulSoup
 from app.llm import generate_text, LLMError
 from app.config import USE_LEGACY_INLINE_STYLES
@@ -9,13 +14,16 @@ from app.validator import check_similarity_with_existing
 
 SEO_BRAND_SUFFIX = " | Graszki.pl"
 SEO_TITLE_MAX_LENGTH = 65
+PRODUCER_SITEMAP_URL = "https://graszki.pl/sitemap-producenci.xml"
+PRODUCER_SITEMAP_TIMEOUT_SECONDS = 4
+_producer_url_cache: dict[str, str] | None = None
 
 GENERATOR_SYSTEM_INSTRUCTION = """Jesteś doświadczonym copywriterem specjalizującym się w branży gier planszowych oraz optymalizacji SEO/GEO. Twój cel to przygotowanie unikalnych, atrakcyjnych i zgodnych z wymaganiami opisów produktów dla sklepu graszki.pl.
 
 Napisz tekst całkowicie po polsku, zachowując przyjazny, konkretny, lekko entuzjastyczny, ale wiarygodny ton. Unikaj agresywnego marketingu, pustych obietnic i nadmiaru przymiotników. Używaj prostego, naturalnego języka.
 
 Zasady kluczowe:
-1. Bazuj wyłącznie na podanych faktach. Nie wymyślaj informacji o grze (autorach, wydawcy, elementach itp.). Jeśli brak jakiejś informacji, pomiń ją lub napisz "brak potwierdzonych danych".
+1. Bazuj wyłącznie na podanych faktach. Nie wymyślaj informacji o grze (autorach, wydawcy, elementach itp.). Jeśli brak jakiejś informacji, pomiń ją. Nie używaj zwrotów typu "brak potwierdzonych danych".
 2. Opisy muszą być unikatowe. Nie kopiuj konstrukcji ani zdań z innych serwisów.
 3. Rotuj style rozpoczęcia opisu (od klimatu, celu gry, sytuacji przy stole, mechaniki, grupy docelowej lub pytania).
 4. Nie zaczynaj opisu od słów "To gra...", "Ta gra..." ani podobnych szablonowych zwrotów.
@@ -62,19 +70,20 @@ Wymagane sekcje w opisie rozszerzonym HTML:
 
 6. <h2>Dodatkowe informacje:</h2>
    <ul>
-   <li><strong>Wydawca:</strong> ...</li>
+   {publisher_li}
    <li><strong>Autor:</strong> ...</li>
    {illustrator_li}
    <li><strong>Wydanie:</strong> {edition_language}</li>
    <li><strong>Instrukcja:</strong> {manual_language}</li>
-   <li><strong>Liczba graczy:</strong> {players}</li>
-   <li><strong>Zalecany wiek:</strong> {age}</li>
-   <li><strong>Czas gry:</strong> {play_time}</li>
+   {players_li}
+   {age_li}
+   {play_time_li}
    {preorder_li}
    {pdf_manual_li}
    </ul>
 
 *Ważne*: Jeśli dany parametr w sekcji "Dodatkowe informacje" (np. ilustrator, projektant, instrukcja PDF) jest pusty lub nieznany, POMIŃ go w wyjściowym HTML (nie wstawiaj pustego punktu <li>).
+*Ważne*: Nie wpisuj w żadnym wierszu "brak potwierdzonych danych", "brak danych", "nieznane" ani podobnych zastępczych wartości. Jeśli wartość nie jest potwierdzona, usuń cały wiersz.
 *Ważne*: Lewa strona każdego punktu w sekcji "Dodatkowe informacje" musi być pogrubiona znacznikiem <strong>, np. <li><strong>Autor:</strong> Imię Nazwisko</li>.
 *Ważne*: Sekcję "Zawartość pudełka:" dodaj tylko wtedy, gdy masz pełną potwierdzoną listę elementów. Jeśli zawartość nie jest dostępna, ukryj całą sekcję i nie dodawaj pustej listy.
 *Ważne*: Nie używaj w opisach sformułowań odwołujących się do źródeł, np. "w oficjalnym opisie", "na stronie producenta", "według wydawcy". To ma być własny opis sklepu.
@@ -96,6 +105,98 @@ def normalize_single_line_text(value: str) -> str:
         return ""
     text = BeautifulSoup(str(value), "html.parser").get_text(" ")
     return re.sub(r"\s+", " ", text).strip()
+
+def _is_unknown_placeholder(value: str) -> bool:
+    normalized = normalize_single_line_text(value).strip().lower()
+    normalized = normalized.rstrip(".:;,-")
+    normalized = normalized.replace("potweirdzonych", "potwierdzonych")
+    return normalized in {
+        "brak danych",
+        "brak informacji",
+        "brak potwierdzenia",
+        "brak potwierdzonych danych",
+        "brak potwierdzonej informacji",
+        "brak potwierdzonych informacji",
+        "nieznane",
+        "nieznany",
+        "nieznana",
+        "nie ustalono",
+        "nie potwierdzono",
+    }
+
+def _additional_info_li(label: str, value: str) -> str:
+    normalized = normalize_single_line_text(value)
+    if not normalized or _is_unknown_placeholder(normalized):
+        return ""
+    return f"<li><strong>{escape(label, quote=True)}:</strong> {escape(normalized, quote=True)}</li>"
+
+def _slugify_store_path(value: str) -> str:
+    normalized = normalize_single_line_text(value)
+    normalized = re.sub(r"\b(?:sp\.?\s*z\s*o\.?o\.?|s\.?a\.?|ltd\.?|inc\.?|games?)\b", " ", normalized, flags=re.IGNORECASE)
+    ascii_text = unicodedata.normalize("NFKD", normalized).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", ascii_text.lower())).strip("-")
+
+def _producer_sitemap_key(value: str) -> str:
+    return _slugify_store_path(value)
+
+def _producer_key_from_url(url: str) -> str:
+    path_parts = [part for part in urlparse(url).path.strip("/").split("/") if part]
+    if not path_parts:
+        return ""
+    if len(path_parts) >= 3 and path_parts[-2].lower() == "pr":
+        return _producer_sitemap_key(path_parts[-3])
+    return _producer_sitemap_key(path_parts[-1])
+
+def _load_producer_url_map() -> dict[str, str]:
+    global _producer_url_cache
+    if _producer_url_cache is not None:
+        return _producer_url_cache
+
+    url_map = {}
+    try:
+        with urllib.request.urlopen(PRODUCER_SITEMAP_URL, timeout=PRODUCER_SITEMAP_TIMEOUT_SECONDS) as response:
+            sitemap_xml = response.read()
+        root = ET.fromstring(sitemap_xml)
+        for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
+            url = (loc.text or "").strip()
+            key = _producer_key_from_url(url)
+            if key and key not in url_map:
+                url_map[key] = url
+            compact_key = key.replace("-", "")
+            if compact_key and compact_key not in url_map:
+                url_map[compact_key] = url
+    except Exception as exc:
+        logger.warning(f"Could not load producer sitemap from {PRODUCER_SITEMAP_URL}: {exc}")
+
+    _producer_url_cache = url_map
+    return url_map
+
+def resolve_producer_store_url(publisher: str) -> str:
+    key = _producer_sitemap_key(publisher)
+    if not key:
+        return ""
+    producer_map = _load_producer_url_map()
+    return producer_map.get(key) or producer_map.get(key.replace("-", "")) or f"https://graszki.pl/{key}"
+
+def _publisher_li(publisher: str) -> str:
+    normalized = normalize_single_line_text(publisher)
+    if not normalized or _is_unknown_placeholder(normalized):
+        return ""
+    producer_url = resolve_producer_store_url(normalized)
+    escaped_publisher = escape(normalized, quote=True)
+    if not producer_url:
+        return _additional_info_li("Wydawca", normalized)
+    return (
+        "<li><strong>Wydawca:</strong> "
+        f"<a href='{escape(producer_url, quote=True)}'>{escaped_publisher}</a></li>"
+    )
+
+def _manual_pdf_link_label(game_name: str, manual_url: str) -> str:
+    path_name = unquote(urlparse(manual_url).path.rsplit("/", 1)[-1])
+    if path_name.lower().endswith(".pdf"):
+        return path_name
+    game_slug = _slugify_store_path(game_name) or "instrukcja"
+    return f"{game_slug}-instrukcja.pdf" if game_slug != "instrukcja" else "instrukcja.pdf"
 
 def normalize_release_note(value: str) -> str:
     """Return a display-ready release note without duplicated label text."""
@@ -183,6 +284,9 @@ def _bold_additional_info_labels(soup: BeautifulSoup) -> None:
     for li in info_items:
         text = li.get_text(" ", strip=True)
         if not text or ":" not in text:
+            continue
+        existing_strong = li.find("strong", recursive=False)
+        if existing_strong and existing_strong.get_text(" ", strip=True).rstrip().endswith(":"):
             continue
         label, value = text.split(":", 1)
         label = label.strip()
@@ -283,6 +387,72 @@ def _remove_preorder_status_items(soup: BeautifulSoup) -> None:
         if normalized.startswith("przedsprzedaż ") or normalized.startswith("przedsprzedaz "):
             li.extract()
 
+def _remove_unknown_additional_info_items(soup: BeautifulSoup) -> None:
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) != "dodatkowe informacje":
+            continue
+        ul = heading.find_next_sibling("ul")
+        if not ul:
+            return
+        for li in list(ul.find_all("li", recursive=False)):
+            text = li.get_text(" ", strip=True)
+            value = text.split(":", 1)[1].strip() if ":" in text else text
+            if _is_unknown_placeholder(value):
+                li.extract()
+        return
+
+def _link_publisher_items(soup: BeautifulSoup) -> None:
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) != "dodatkowe informacje":
+            continue
+        ul = heading.find_next_sibling("ul")
+        if not ul:
+            return
+        for li in ul.find_all("li", recursive=False):
+            text = li.get_text(" ", strip=True)
+            if ":" not in text:
+                continue
+            label, value = text.split(":", 1)
+            if normalize_single_line_text(label).strip().rstrip(":").lower() != "wydawca":
+                continue
+            publisher = normalize_single_line_text(value)
+            if not publisher or _is_unknown_placeholder(publisher):
+                continue
+            producer_url = resolve_producer_store_url(publisher)
+            li.clear()
+            strong = soup.new_tag("strong")
+            strong.string = "Wydawca:"
+            li.append(strong)
+            li.append(" ")
+            link = soup.new_tag("a", href=producer_url)
+            link.string = publisher
+            li.append(link)
+        return
+
+def _label_manual_pdf_items(soup: BeautifulSoup, game_name: str = "") -> None:
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) != "dodatkowe informacje":
+            continue
+        ul = heading.find_next_sibling("ul")
+        if not ul:
+            return
+        for li in ul.find_all("li", recursive=False):
+            text = li.get_text(" ", strip=True)
+            if ":" not in text:
+                continue
+            label, _value = text.split(":", 1)
+            if normalize_single_line_text(label).strip().rstrip(":").lower() != "instrukcja pdf":
+                continue
+            link = li.find("a")
+            if not link:
+                continue
+            link_text = normalize_single_line_text(link.get_text(" ", strip=True)).lower()
+            if link_text in {"", "link"}:
+                link.string = _manual_pdf_link_label(game_name, link.get("href", ""))
+            link["target"] = "_blank"
+            link["rel"] = "noopener"
+        return
+
 def _ensure_preorder_release_info(soup: BeautifulSoup, release_date_note: str) -> None:
     release_text = normalize_release_note(release_date_note) or "brak potwierdzonej daty"
     for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
@@ -313,6 +483,7 @@ def normalize_description_html(
     box_contents: list | None = None,
     is_preorder: bool = False,
     release_date_note: str = "",
+    game_name: str = "",
 ) -> str:
     """Apply shop formatting rules that should not depend on model compliance."""
     if not html_content:
@@ -323,6 +494,9 @@ def normalize_description_html(
         _remove_section_by_heading(soup, "Zawartość pudełka")
     _remove_preorder_status_items(soup)
     _repair_additional_info_list(soup)
+    _remove_unknown_additional_info_items(soup)
+    _link_publisher_items(soup)
+    _label_manual_pdf_items(soup, game_name)
     if is_preorder:
         _ensure_preorder_release_info(soup, release_date_note)
     _bold_additional_info_labels(soup)
@@ -501,8 +675,14 @@ def generate_descriptions(
         preorder_li = "<li><strong>Orientacyjna premiera:</strong> ...</li>"
         
     pdf_manual_li = ""
-    if resolved_facts.get("instruction_pdf"):
-        pdf_manual_li = "<li><strong>Instrukcja PDF:</strong> link</li>"
+    instruction_pdf = (resolved_facts.get("instruction_pdf") or "").strip()
+    if instruction_pdf:
+        escaped_instruction_pdf = escape(instruction_pdf, quote=True)
+        manual_label = escape(_manual_pdf_link_label(game_name, instruction_pdf), quote=True)
+        pdf_manual_li = (
+            "<li><strong>Instrukcja PDF:</strong> "
+            f"<a href='{escaped_instruction_pdf}' target='_blank' rel='noopener'>{manual_label}</a></li>"
+        )
         
     box_contents = resolved_facts.get("box_contents") or []
     box_contents_html = ""
@@ -532,12 +712,13 @@ def generate_descriptions(
         additional_prompt_instruction=additional_prompt_instruction,
         group_docelowa_html=group_docelowa_html,
         box_contents_html=box_contents_html,
+        publisher_li=_publisher_li(resolved_facts.get("publisher")),
         illustrator_li=illustrator_li,
         edition_language=resolved_facts.get("edition_language") or "polskie",
         manual_language=resolved_facts.get("manual_language") or "polska",
-        players=resolved_facts.get("players") or "brak potwierdzonych danych",
-        age=resolved_facts.get("age") or "brak potwierdzonych danych",
-        play_time=resolved_facts.get("play_time") or "brak potwierdzonych danych",
+        players_li=_additional_info_li("Liczba graczy", resolved_facts.get("players")),
+        age_li=_additional_info_li("Zalecany wiek", resolved_facts.get("age")),
+        play_time_li=_additional_info_li("Czas gry", resolved_facts.get("play_time")),
         preorder_li=preorder_li,
         pdf_manual_li=pdf_manual_li
     )
@@ -563,6 +744,7 @@ def generate_descriptions(
             box_contents=box_contents,
             is_preorder=is_preorder,
             release_date_note=resolved_facts.get("release_date") or user_inputs.get("release_date_note", ""),
+            game_name=game_name,
         )
         result["extended_description_html"] = html_content
         
