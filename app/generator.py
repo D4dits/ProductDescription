@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from html import escape
 from bs4 import BeautifulSoup
 from app.llm import generate_text, LLMError
-from app.config import USE_LEGACY_INLINE_STYLES
+from app.config import CACHE_DIR, USE_LEGACY_INLINE_STYLES
 from app.logger import logger
 from app.json_utils import parse_llm_json
 from app.validator import check_similarity_with_existing
@@ -16,7 +16,12 @@ SEO_BRAND_SUFFIX = " | Graszki.pl"
 SEO_TITLE_MAX_LENGTH = 65
 PRODUCER_SITEMAP_URL = "https://graszki.pl/sitemap-producenci.xml"
 PRODUCER_SITEMAP_TIMEOUT_SECONDS = 4
+PRODUCER_SITEMAP_CACHE = CACHE_DIR / "producer-sitemap.xml"
 _producer_url_cache: dict[str, str] | None = None
+CATEGORY_SITEMAP_URL = "https://graszki.pl/sitemap-kategorie.xml"
+CATEGORY_SITEMAP_TIMEOUT_SECONDS = 4
+CATEGORY_SITEMAP_CACHE = CACHE_DIR / "category-sitemap.xml"
+_category_url_cache: dict[str, str] | None = None
 
 GENERATOR_SYSTEM_INSTRUCTION = """Jesteś doświadczonym copywriterem specjalizującym się w branży gier planszowych oraz optymalizacji SEO/GEO. Twój cel to przygotowanie unikalnych, atrakcyjnych i zgodnych z wymaganiami opisów produktów dla sklepu graszki.pl.
 
@@ -137,7 +142,10 @@ def _slugify_store_path(value: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", ascii_text.lower())).strip("-")
 
 def _producer_sitemap_key(value: str) -> str:
-    return _slugify_store_path(value)
+    normalized = normalize_single_line_text(value)
+    normalized = re.sub(r"\b(?:sp\.?\s*z\s*o\.?o\.?|s\.?a\.?|ltd\.?|inc\.?)\b", " ", normalized, flags=re.IGNORECASE)
+    ascii_text = unicodedata.normalize("NFKD", normalized).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", ascii_text.lower())).strip("-")
 
 def _producer_key_from_url(url: str) -> str:
     path_parts = [part for part in urlparse(url).path.strip("/").split("/") if part]
@@ -152,21 +160,40 @@ def _load_producer_url_map() -> dict[str, str]:
     if _producer_url_cache is not None:
         return _producer_url_cache
 
-    url_map = {}
+    sitemap_xml = b""
     try:
-        with urllib.request.urlopen(PRODUCER_SITEMAP_URL, timeout=PRODUCER_SITEMAP_TIMEOUT_SECONDS) as response:
+        request = urllib.request.Request(
+            PRODUCER_SITEMAP_URL,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; GraszkiContentBot/1.0)"},
+        )
+        with urllib.request.urlopen(request, timeout=PRODUCER_SITEMAP_TIMEOUT_SECONDS) as response:
             sitemap_xml = response.read()
-        root = ET.fromstring(sitemap_xml)
-        for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
-            url = (loc.text or "").strip()
-            key = _producer_key_from_url(url)
-            if key and key not in url_map:
-                url_map[key] = url
-            compact_key = key.replace("-", "")
-            if compact_key and compact_key not in url_map:
-                url_map[compact_key] = url
+        PRODUCER_SITEMAP_CACHE.write_bytes(sitemap_xml)
     except Exception as exc:
         logger.warning(f"Could not load producer sitemap from {PRODUCER_SITEMAP_URL}: {exc}")
+        try:
+            sitemap_xml = PRODUCER_SITEMAP_CACHE.read_bytes()
+        except OSError:
+            sitemap_xml = b""
+
+    url_map: dict[str, str] = {}
+    compact_urls: dict[str, set[str]] = {}
+    if sitemap_xml:
+        try:
+            root = ET.fromstring(sitemap_xml)
+            for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
+                url = (loc.text or "").strip()
+                key = _producer_key_from_url(url)
+                if key and key not in url_map:
+                    url_map[key] = url
+                compact_key = key.replace("-", "")
+                if compact_key:
+                    compact_urls.setdefault(compact_key, set()).add(url)
+        except ET.ParseError as exc:
+            logger.warning(f"Could not parse producer sitemap: {exc}")
+    for compact_key, urls in compact_urls.items():
+        if len(urls) == 1 and compact_key not in url_map:
+            url_map[compact_key] = next(iter(urls))
 
     _producer_url_cache = url_map
     return url_map
@@ -176,7 +203,63 @@ def resolve_producer_store_url(publisher: str) -> str:
     if not key:
         return ""
     producer_map = _load_producer_url_map()
-    return producer_map.get(key) or producer_map.get(key.replace("-", ""))
+    legacy_key = _slugify_store_path(publisher)
+    return producer_map.get(key) or producer_map.get(key.replace("-", "")) or producer_map.get(legacy_key)
+
+def _category_sitemap_key(value: str) -> str:
+    normalized = normalize_single_line_text(value).strip(" -/")
+    ascii_text = unicodedata.normalize("NFKD", normalized).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", ascii_text.lower())).strip("-")
+
+def _category_key_from_url(url: str) -> str:
+    path = urlparse(url).path.strip("/").rsplit("/", 1)[-1]
+    path = re.sub(r"-c\d+$", "", path, flags=re.IGNORECASE)
+    return _category_sitemap_key(path)
+
+def _load_category_url_map() -> dict[str, str]:
+    global _category_url_cache
+    if _category_url_cache is not None:
+        return _category_url_cache
+
+    sitemap_xml = b""
+    try:
+        request = urllib.request.Request(
+            CATEGORY_SITEMAP_URL,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; GraszkiContentBot/1.0)"},
+        )
+        with urllib.request.urlopen(request, timeout=CATEGORY_SITEMAP_TIMEOUT_SECONDS) as response:
+            sitemap_xml = response.read()
+        CATEGORY_SITEMAP_CACHE.write_bytes(sitemap_xml)
+    except Exception as exc:
+        logger.warning(f"Could not load category sitemap from {CATEGORY_SITEMAP_URL}: {exc}")
+        try:
+            sitemap_xml = CATEGORY_SITEMAP_CACHE.read_bytes()
+        except OSError:
+            sitemap_xml = b""
+
+    url_map: dict[str, str] = {}
+    if sitemap_xml:
+        try:
+            root = ET.fromstring(sitemap_xml)
+            for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
+                url = (loc.text or "").strip()
+                key = _category_key_from_url(url)
+                if key and key not in url_map:
+                    url_map[key] = url
+        except ET.ParseError as exc:
+            logger.warning(f"Could not parse category sitemap: {exc}")
+
+    _category_url_cache = url_map
+    return url_map
+
+def resolve_category_store_url(category: str) -> str:
+    category_map = _load_category_url_map()
+    values = [category, *reversed(re.split(r"\s*/\s*", category))]
+    for value in values:
+        key = _category_sitemap_key(value)
+        if key in category_map:
+            return category_map[key]
+    return ""
 
 def _publisher_li(publisher: str) -> str:
     normalized = normalize_single_line_text(publisher)
@@ -259,46 +342,31 @@ def _remove_section_by_heading(soup: BeautifulSoup, section_name: str) -> None:
         heading.extract()
         break
 
-def _bold_additional_info_labels(soup: BeautifulSoup) -> None:
-    heading = None
-    for candidate in soup.find_all(["h1", "h2", "h3", "h4"]):
-        if _heading_text(candidate) == "dodatkowe informacje":
-            heading = candidate
-            break
-    if not heading:
-        return
-
-    section_nodes = []
-    current = heading.next_sibling
-    while current:
-        if getattr(current, "name", None) in {"h1", "h2", "h3", "h4"}:
-            break
-        section_nodes.append(current)
-        current = current.next_sibling
-
-    info_items = []
-    for node in section_nodes:
-        if getattr(node, "name", None) == "ul":
-            info_items.extend(node.find_all("li", recursive=False))
-
-    for li in info_items:
-        text = li.get_text(" ", strip=True)
-        if not text or ":" not in text:
+def _bold_product_info_labels(soup: BeautifulSoup) -> None:
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) not in {"dodatkowe informacje", "dane produktu"}:
             continue
-        existing_strong = li.find("strong", recursive=False)
-        if existing_strong and existing_strong.get_text(" ", strip=True).rstrip().endswith(":"):
-            continue
-        label, value = text.split(":", 1)
-        label = label.strip()
-        value = value.strip()
-        if not label:
-            continue
-        li.clear()
-        strong = soup.new_tag("strong")
-        strong.string = f"{label}:"
-        li.append(strong)
-        if value:
-            li.append(f" {value}")
+        current = heading.next_sibling
+        while current and getattr(current, "name", None) not in {"h1", "h2", "h3", "h4"}:
+            if getattr(current, "name", None) == "ul":
+                for li in current.find_all("li", recursive=False):
+                    text = li.get_text(" ", strip=True)
+                    if not text or ":" not in text:
+                        continue
+                    existing_strong = li.find("strong", recursive=False)
+                    if existing_strong and existing_strong.get_text(" ", strip=True).rstrip().endswith(":"):
+                        continue
+                    label, value = text.split(":", 1)
+                    label = label.strip()
+                    if not label:
+                        continue
+                    li.clear()
+                    strong = soup.new_tag("strong")
+                    strong.string = f"{label}:"
+                    li.append(strong)
+                    if value.strip():
+                        li.append(f" {value.strip()}")
+            current = current.next_sibling
 
 ADDITIONAL_INFO_LABELS = [
     "Autor",
@@ -403,7 +471,7 @@ def _remove_unknown_additional_info_items(soup: BeautifulSoup) -> None:
 
 def _link_publisher_items(soup: BeautifulSoup) -> None:
     for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
-        if _heading_text(heading) != "dodatkowe informacje":
+        if _heading_text(heading) not in {"dodatkowe informacje", "dane produktu"}:
             continue
         ul = heading.find_next_sibling("ul")
         if not ul:
@@ -413,7 +481,8 @@ def _link_publisher_items(soup: BeautifulSoup) -> None:
             if ":" not in text:
                 continue
             label, value = text.split(":", 1)
-            if normalize_single_line_text(label).strip().rstrip(":").lower() != "wydawca":
+            normalized_label = normalize_single_line_text(label).strip().rstrip(":").lower()
+            if normalized_label not in {"wydawca", "producent"}:
                 continue
             publisher = normalize_single_line_text(value)
             if not publisher or _is_unknown_placeholder(publisher):
@@ -423,13 +492,87 @@ def _link_publisher_items(soup: BeautifulSoup) -> None:
                 continue
             li.clear()
             strong = soup.new_tag("strong")
-            strong.string = "Wydawca:"
+            strong.string = f"{normalize_single_line_text(label).strip().rstrip(':')}:"
             li.append(strong)
             li.append(" ")
             link = soup.new_tag("a", href=producer_url)
             link.string = publisher
             li.append(link)
         return
+
+def _link_category_items(soup: BeautifulSoup) -> None:
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) not in {"dodatkowe informacje", "dane produktu"}:
+            continue
+        ul = heading.find_next_sibling("ul")
+        if not ul:
+            continue
+        for li in ul.find_all("li", recursive=False):
+            text = li.get_text(" ", strip=True)
+            if ":" not in text:
+                continue
+            label, value = text.split(":", 1)
+            if normalize_single_line_text(label).strip().lower() != "kategoria":
+                continue
+            category = normalize_single_line_text(value)
+            category_url = resolve_category_store_url(category)
+            if not category_url:
+                continue
+            li.clear()
+            strong = soup.new_tag("strong")
+            strong.string = "Kategoria:"
+            li.append(strong)
+            li.append(" ")
+            link = soup.new_tag("a", href=category_url)
+            link.string = category
+            li.append(link)
+
+def _ensure_category_item(soup: BeautifulSoup, category: str, replace_existing: bool = False) -> None:
+    category = normalize_single_line_text(category)
+    if not category:
+        return
+    display_name = normalize_single_line_text(re.split(r"\s*/\s*", category)[-1]).strip(" -")
+    if not display_name:
+        return
+    for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
+        if _heading_text(heading) not in {"dodatkowe informacje", "dane produktu"}:
+            continue
+        ul = heading.find_next_sibling("ul")
+        if not ul:
+            continue
+        for li in ul.find_all("li", recursive=False):
+            text = li.get_text(" ", strip=True)
+            if ":" in text and normalize_single_line_text(text.split(":", 1)[0]).lower() == "kategoria":
+                if not replace_existing:
+                    return
+                li.clear()
+                li.append("Kategoria: ")
+                li.append(display_name)
+                return
+        li = soup.new_tag("li")
+        li.append("Kategoria: ")
+        li.append(display_name)
+        ul.append(li)
+        return
+
+def _position_box_contents_section(soup: BeautifulSoup) -> None:
+    headings = soup.find_all(["h1", "h2", "h3", "h4"])
+    box_heading = next((heading for heading in headings if _heading_text(heading) == "zawartość pudełka"), None)
+    if box_heading is None:
+        return
+    box_list = box_heading.find_next_sibling()
+    if box_list is None or box_list.name != "ul":
+        return
+    target = next(
+        (
+            heading for heading in headings
+            if heading is not box_heading and _heading_text(heading) in {"dane produktu", "dodatkowe informacje"}
+        ),
+        None,
+    )
+    if target is not None:
+        target.insert_before(box_heading)
+        target.insert_before(box_list)
 
 def _label_manual_pdf_items(soup: BeautifulSoup, game_name: str = "") -> None:
     for heading in soup.find_all(["h1", "h2", "h3", "h4"]):
@@ -486,6 +629,8 @@ def normalize_description_html(
     is_preorder: bool = False,
     release_date_note: str = "",
     game_name: str = "",
+    category: str = "",
+    replace_category: bool = False,
 ) -> str:
     """Apply shop formatting rules that should not depend on model compliance."""
     if not html_content:
@@ -494,14 +639,18 @@ def normalize_description_html(
     soup = BeautifulSoup(html_content, "html.parser")
     if not box_contents:
         _remove_section_by_heading(soup, "Zawartość pudełka")
+    else:
+        _position_box_contents_section(soup)
     _remove_preorder_status_items(soup)
     _repair_additional_info_list(soup)
     _remove_unknown_additional_info_items(soup)
+    _ensure_category_item(soup, category, replace_existing=replace_category)
     _link_publisher_items(soup)
+    _link_category_items(soup)
     _label_manual_pdf_items(soup, game_name)
     if is_preorder:
         _ensure_preorder_release_info(soup, release_date_note)
-    _bold_additional_info_labels(soup)
+    _bold_product_info_labels(soup)
     return str(soup)
 
 def apply_legacy_inline_styles(html_content: str) -> str:

@@ -943,3 +943,352 @@ regenBtns.forEach(btn => {
         await runPipeline(payload, "/api/regenerate");
     });
 });
+
+// Batch Rebel workflow
+const singleModeBtn = document.getElementById("single-mode-btn");
+const batchModeBtn = document.getElementById("batch-mode-btn");
+const singleView = document.getElementById("single-view");
+const batchView = document.getElementById("batch-view");
+const batchWorkspace = document.getElementById("batch-workspace");
+let currentBatchId = null;
+let currentBatchProduct = null;
+let currentBatchOffset = 0;
+const batchPageSize = 100;
+
+function setAppMode(mode) {
+    const batch = mode === "batch";
+    singleView.hidden = batch;
+    batchView.hidden = !batch;
+    singleModeBtn.classList.toggle("active", !batch);
+    batchModeBtn.classList.toggle("active", batch);
+    history.replaceState(null, "", batch ? "#batch" : location.pathname);
+    if (batch) loadBatches();
+}
+
+singleModeBtn.addEventListener("click", () => setAppMode("single"));
+batchModeBtn.addEventListener("click", () => setAppMode("batch"));
+
+async function batchApi(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Operacja nie powiodła się.");
+    return data;
+}
+
+async function fileToBase64(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const chunkSize = 0x8000;
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+    }
+    return btoa(binary);
+}
+
+document.getElementById("batch-import-btn").addEventListener("click", async () => {
+    const button = document.getElementById("batch-import-btn");
+    const skyFile = document.getElementById("batch-sky-file").files[0];
+    const rebelFile = document.getElementById("batch-rebel-file").files[0];
+    if (!skyFile) return showToast("Wybierz eksport produktów Sky-Shop.", "error");
+    try {
+        button.disabled = true;
+        button.innerHTML = "<i class='fa-solid fa-spinner fa-spin'></i> Importowanie...";
+        const payload = {
+            name: document.getElementById("batch-name").value.trim(),
+            sky_csv_base64: await fileToBase64(skyFile),
+            rebel_csv_base64: rebelFile ? await fileToBase64(rebelFile) : null
+        };
+        const batch = await batchApi("/api/batches/import", {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+        });
+        currentBatchId = batch.id;
+        await loadBatches();
+        showToast(`Utworzono partię ${batch.id} (${batch.total} produktów).`, "success");
+    } catch (error) {
+        showToast(error.message, "error");
+    } finally {
+        button.disabled = false;
+        button.innerHTML = "<i class='fa-solid fa-file-import'></i> Utwórz partię";
+    }
+});
+
+async function loadBatches() {
+    try {
+        const data = await batchApi("/api/batches");
+        const picker = document.getElementById("batch-picker");
+        picker.replaceChildren();
+        for (const batch of data.items) {
+            const option = document.createElement("option");
+            option.value = batch.id;
+            option.textContent = `${batch.name} · ${batch.id}`;
+            picker.appendChild(option);
+        }
+        if (!currentBatchId && data.items.length) currentBatchId = data.items[0].id;
+        if (currentBatchId) {
+            picker.value = currentBatchId;
+            batchWorkspace.hidden = false;
+            await refreshBatch();
+        }
+    } catch (error) {
+        showToast(error.message, "error");
+    }
+}
+
+document.getElementById("batch-picker").addEventListener("change", event => {
+    currentBatchId = event.target.value;
+    currentBatchProduct = null;
+    currentBatchOffset = 0;
+    refreshBatch();
+});
+document.getElementById("batch-refresh-btn").addEventListener("click", () => currentBatchId ? refreshBatch() : loadBatches());
+document.getElementById("batch-status-filter").addEventListener("change", () => {
+    currentBatchOffset = 0;
+    loadBatchProducts();
+});
+
+async function refreshBatch() {
+    if (!currentBatchId) return;
+    try {
+        const batch = await batchApi(`/api/batches/${currentBatchId}`);
+        document.getElementById("batch-title").textContent = batch.name;
+        document.getElementById("batch-id").textContent = batch.id;
+        document.getElementById("batch-report-btn").href = `/api/batches/${batch.id}/report.csv`;
+        const batchLabels = {ready: "Gotowa", generating: "Generowanie", review: "Do kontroli", failed: "Błąd", completed: "Zakończona", completed_with_errors: "Zakończona z błędami", publishing: "Wysyłanie", rolling_back: "Przywracanie", rolled_back: "Przywrócona"};
+        document.getElementById("batch-status").textContent = batchLabels[batch.status] || batch.status;
+        const message = document.getElementById("batch-message");
+        message.hidden = !batch.message;
+        message.textContent = batch.message || "";
+        message.classList.toggle("is-error", batch.status === "failed" || /błąd|odrzucił/i.test(batch.message || ""));
+        renderBatchProgress(batch);
+        const busy = ["generating", "publishing", "rolling_back"].includes(batch.status);
+        document.getElementById("batch-pilot-btn").disabled = busy;
+        document.getElementById("batch-full-btn").disabled = busy;
+        document.getElementById("batch-publish-btn").disabled = busy;
+        renderBatchStats(batch);
+        await loadBatchProducts();
+    } catch (error) {
+        showToast(error.message, "error");
+    }
+}
+
+function formatBatchDuration(seconds) {
+    if (!seconds) return "0 s";
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return hours ? `${hours} godz. ${minutes} min` : minutes ? `${minutes} min ${secs} s` : `${secs} s`;
+}
+
+function renderBatchProgress(batch) {
+    const progress = batch.progress || {};
+    const active = ["generating", "publishing", "rolling_back"].includes(batch.status);
+    const container = document.getElementById("batch-progress");
+    container.hidden = !active;
+    if (!active) return;
+    const done = progress.done || 0;
+    const total = progress.total || 0;
+    document.getElementById("batch-progress-title").textContent = `${done} z ${total} (${progress.percent || 0}%)`;
+    const elapsed = formatBatchDuration(progress.elapsed_seconds || 0);
+    const eta = progress.eta_seconds ? formatBatchDuration(progress.eta_seconds) : "";
+    document.getElementById("batch-progress-time").textContent = eta ? `Czas: ${elapsed} · pozostało ok. ${eta}` : `Czas: ${elapsed}`;
+    document.getElementById("batch-progress-bar").style.width = `${progress.percent || 0}%`;
+    document.getElementById("batch-progress-current").textContent = progress.current_product ? `Aktualnie: ${progress.current_product} · zadania równoległe: ${progress.workers}` : "Przygotowywanie kolejki…";
+}
+
+function renderBatchHtmlPreview() {
+    const source = document.getElementById("batch-extended-description");
+    document.getElementById("batch-html-preview").innerHTML = source.value || "";
+}
+
+function renderBatchStats(batch) {
+    const container = document.getElementById("batch-stats");
+    const labels = {
+        matched: "Dopasowane", generating: "Generowane", needs_review: "Do kontroli",
+        approved: "Zatwierdzone", verified: "Zweryfikowane", failed: "Błędy",
+        unchanged: "Bez zmian", rolled_back: "Przywrócone"
+    };
+    container.replaceChildren();
+    const total = document.createElement("div");
+    total.className = "batch-stat";
+    total.innerHTML = `<strong>${batch.total}</strong><span>Razem</span>`;
+    container.appendChild(total);
+    for (const [status, count] of Object.entries(batch.counts || {})) {
+        const stat = document.createElement("div");
+        stat.className = `batch-stat status-${status}`;
+        stat.innerHTML = `<strong>${count}</strong><span>${labels[status] || status}</span>`;
+        container.appendChild(stat);
+    }
+}
+
+const batchStatusLabels = {
+    matched: "Dopasowany", generating: "Generowanie", needs_review: "Do kontroli",
+    approved: "Zatwierdzony", verified: "Zweryfikowany", failed: "Błąd",
+    unchanged: "Bez zmian", rolled_back: "Przywrócony"
+};
+
+async function loadBatchProducts() {
+    if (!currentBatchId) return;
+    const status = document.getElementById("batch-status-filter").value;
+    const query = new URLSearchParams({limit: String(batchPageSize), offset: String(currentBatchOffset), status});
+    const data = await batchApi(`/api/batches/${currentBatchId}/products?${query}`);
+    const body = document.getElementById("batch-product-rows");
+    body.replaceChildren();
+    for (const product of data.items) {
+        const row = document.createElement("tr");
+        row.dataset.productId = product.product_id;
+        if (currentBatchProduct?.product_id === product.product_id) row.classList.add("active");
+        const checkboxCell = document.createElement("td");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "batch-select-product";
+        checkbox.checked = product.status === "needs_review";
+        checkbox.disabled = product.status !== "needs_review";
+        checkboxCell.appendChild(checkbox);
+        const values = [product.product_id, product.name, product.product_type === "accessory" ? "Akcesorium" : "Gra", batchStatusLabels[product.status] || product.status];
+        row.appendChild(checkboxCell);
+        for (const value of values) {
+            const cell = document.createElement("td");
+            cell.textContent = value;
+            row.appendChild(cell);
+        }
+        row.addEventListener("click", event => {
+            if (event.target !== checkbox) openBatchProduct(product.product_id);
+        });
+        body.appendChild(row);
+    }
+    const page = Math.floor(currentBatchOffset / batchPageSize) + 1;
+    const pages = Math.max(1, Math.ceil(data.total / batchPageSize));
+    document.getElementById("batch-page-label").textContent = `Strona ${page} z ${pages}`;
+    document.getElementById("batch-prev-btn").disabled = currentBatchOffset === 0;
+    document.getElementById("batch-next-btn").disabled = currentBatchOffset + batchPageSize >= data.total;
+}
+
+document.getElementById("batch-prev-btn").addEventListener("click", () => {
+    currentBatchOffset = Math.max(0, currentBatchOffset - batchPageSize);
+    loadBatchProducts();
+});
+document.getElementById("batch-next-btn").addEventListener("click", () => {
+    currentBatchOffset += batchPageSize;
+    loadBatchProducts();
+});
+
+async function openBatchProduct(productId) {
+    try {
+        currentBatchProduct = await batchApi(`/api/batches/${currentBatchId}/products/${productId}`);
+        const product = currentBatchProduct;
+        document.getElementById("batch-editor").hidden = false;
+        document.getElementById("batch-product-name").textContent = product.name;
+        document.getElementById("batch-product-meta").textContent = `ID ${product.product_id} · ${product.match_method.toUpperCase()} · ${product.product_type}`;
+        document.getElementById("batch-product-status").textContent = batchStatusLabels[product.status] || product.status;
+        document.getElementById("batch-status-reason").textContent = product.status_reason || "";
+        const content = product.content || {};
+        document.getElementById("batch-short-description").value = content.short_description || "";
+        document.getElementById("batch-seo-title").value = content.seo_title || "";
+        document.getElementById("batch-meta-description").value = content.meta_description || "";
+        document.getElementById("batch-tags").value = (content.tags || []).join(", ");
+        document.getElementById("batch-extended-description").value = content.extended_description_html || "";
+        renderBatchHtmlPreview();
+        const source = product.source || {};
+        const sourceLink = document.getElementById("batch-source-link");
+        sourceLink.hidden = !source.rebel_page_url;
+        sourceLink.href = source.rebel_page_url || "#";
+        const facts = [];
+        if (source.players) facts.push(`Liczba graczy: ${source.players}`);
+        if (source.age) facts.push(`Wiek: ${source.age}`);
+        if (source.play_time) facts.push(`Czas gry: ${source.play_time}`);
+        if (source.box_contents?.length) facts.push(`Zawartość pudełka:\n${source.box_contents.map(item => `• ${item}`).join("\n")}`);
+        document.getElementById("batch-source-facts").textContent = facts.join("\n\n") || "Brak dodatkowych parametrów na karcie produktu.";
+        const alerts = document.getElementById("batch-product-alerts");
+        alerts.replaceChildren();
+        for (const text of [product.error, ...(product.warnings || [])].filter(Boolean)) {
+            const alert = document.createElement("div");
+            alert.className = "batch-alert";
+            alert.textContent = text;
+            alerts.appendChild(alert);
+        }
+        loadBatchProducts();
+    } catch (error) {
+        showToast(error.message, "error");
+    }
+}
+
+async function saveBatchProduct(approved) {
+    if (!currentBatchProduct) return;
+    const content = {
+        short_description: document.getElementById("batch-short-description").value,
+        seo_title: document.getElementById("batch-seo-title").value,
+        meta_description: document.getElementById("batch-meta-description").value,
+        tags: document.getElementById("batch-tags").value.split(",").map(value => value.trim()).filter(Boolean),
+        extended_description_html: document.getElementById("batch-extended-description").value
+    };
+    try {
+        currentBatchProduct = await batchApi(`/api/batches/${currentBatchId}/products/${currentBatchProduct.product_id}`, {
+            method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({content, approved})
+        });
+        showToast(approved ? "Treść zapisana i zatwierdzona." : "Treść zapisana.", "success");
+        await refreshBatch();
+        await openBatchProduct(currentBatchProduct.product_id);
+    } catch (error) {
+        showToast(error.message, "error");
+    }
+}
+
+document.getElementById("batch-save-btn").addEventListener("click", () => saveBatchProduct(false));
+document.getElementById("batch-save-approve-btn").addEventListener("click", () => saveBatchProduct(true));
+document.getElementById("batch-extended-description").addEventListener("input", renderBatchHtmlPreview);
+
+async function startBatchGeneration(mode) {
+    if (!currentBatchId) return;
+    const limit = Math.max(1, Math.min(200, Number(document.getElementById("batch-generation-limit").value) || 50));
+    try {
+        await batchApi(`/api/batches/${currentBatchId}/generate`, {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({mode, limit})
+        });
+        showToast(mode === "pilot" ? "Uruchomiono generowanie pilota." : `Uruchomiono generowanie kolejnych ${limit} produktów.`, "success");
+        await refreshBatch();
+    } catch (error) {
+        showToast(error.message, "error");
+    }
+}
+document.getElementById("batch-pilot-btn").addEventListener("click", () => startBatchGeneration("pilot"));
+document.getElementById("batch-full-btn").addEventListener("click", () => startBatchGeneration("batch"));
+
+document.getElementById("batch-approve-visible-btn").addEventListener("click", async () => {
+    const selected = [...document.querySelectorAll("#batch-product-rows tr")]
+        .filter(row => row.querySelector("input").checked)
+        .map(row => row.dataset.productId);
+    if (!selected.length) return showToast("Zaznacz produkty w statusie Do kontroli.", "error");
+    try {
+        const result = await batchApi(`/api/batches/${currentBatchId}/approve`, {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({product_ids: selected})
+        });
+        showToast(`Zatwierdzono: ${result.updated}.`, "success");
+        await refreshBatch();
+    } catch (error) {
+        showToast(error.message, "error");
+    }
+});
+
+async function runDangerousBatchAction(action) {
+    if (!currentBatchId) return;
+    const confirmation = document.getElementById("batch-confirmation").value.trim();
+    if (confirmation !== currentBatchId) return showToast("Wpisz poprawne ID partii.", "error");
+    try {
+        await batchApi(`/api/batches/${currentBatchId}/${action}`, {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirmation})
+        });
+        document.getElementById("batch-confirmation").value = "";
+        showToast(action === "publish" ? "Rozpoczęto zapis do Sky-Shop." : "Rozpoczęto przywracanie kopii.", "success");
+        await refreshBatch();
+    } catch (error) {
+        showToast(error.message, "error");
+    }
+}
+document.getElementById("batch-publish-btn").addEventListener("click", () => runDangerousBatchAction("publish"));
+document.getElementById("batch-rollback-btn").addEventListener("click", () => runDangerousBatchAction("rollback"));
+
+setInterval(() => {
+    if (!batchView.hidden && currentBatchId) refreshBatch();
+}, 5000);
+
+if (location.hash === "#batch") setAppMode("batch");

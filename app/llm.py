@@ -16,8 +16,13 @@ from app.logger import logger
 class LLMError(Exception):
     pass
 
+class LLMAuthenticationError(LLMError):
+    """The configured provider rejected its API credentials."""
+
+
 ZAI_PROVIDER_ALIASES = {"z_ai", "zai", "z.ai", "z-ai"}
 DEEPSEEK_PROVIDER_ALIASES = {"deepseek", "deep_seek", "deep-seek"}
+_PLACEHOLDER_MARKERS = ("your_", "tu_wstaw", "replace", "example", "api_key_here", "xxx")
 
 def _normalize_provider(provider: str) -> str:
     selected = (provider or LLM_PROVIDER or "gemini").strip().lower()
@@ -39,6 +44,12 @@ def _format_provider_error(provider_label: str, error: Exception) -> str:
             provider_error = payload.get("error", {})
             code = str(provider_error.get("code", ""))
             message = provider_error.get("message", "")
+            status_code = getattr(response, "status_code", None)
+            if status_code == 401 or code in {"401", "invalid_api_key"}:
+                return (
+                    f"{provider_label} odrzucił klucz API (401). Uzupełnij prawidłowy klucz "
+                    "w pliku .env i uruchom generowanie ponownie."
+                )
             if provider_label == "Z.AI" and code == "1113":
                 return (
                     "Z.AI odrzuciło żądanie: brak środków albo aktywnego pakietu zasobów "
@@ -57,7 +68,44 @@ def _format_provider_error(provider_label: str, error: Exception) -> str:
     if provider_label == "DeepSeek" and ("Insufficient Balance" in detail or "insufficient balance" in detail.lower()):
         return "DeepSeek odrzucił żądanie: brak środków na koncie API. Doładuj konto w DeepSeek Platform."
 
+    if "401" in detail and ("authentication" in detail.lower() or "api key" in detail.lower()):
+        return (
+            f"{provider_label} odrzucił klucz API (401). Uzupełnij prawidłowy klucz "
+            "w pliku .env i uruchom generowanie ponownie."
+        )
+
     return f"Błąd podczas generowania przez {provider_label} API: {detail}"
+
+
+def _is_placeholder_key(value: str | None) -> bool:
+    key = (value or "").strip().lower()
+    return not key or any(marker in key for marker in _PLACEHOLDER_MARKERS)
+
+
+def validate_llm_configuration(provider: str | None = None) -> None:
+    """Reject missing/example credentials before a batch worker is started."""
+    selected_provider = _normalize_provider(provider)
+    settings = {
+        "gemini": (GEMINI_API_KEY, "GEMINI_API_KEY"),
+        "openai": (OPENAI_API_KEY, "OPENAI_API_KEY"),
+        "z_ai": (ZAI_API_KEY, "ZAI_API_KEY"),
+        "deepseek": (DEEPSEEK_API_KEY, "DEEPSEEK_API_KEY"),
+    }
+    if selected_provider not in settings:
+        raise LLMError(f"Nieznany dostawca LLM: {selected_provider}.")
+    key, variable = settings[selected_provider]
+    if _is_placeholder_key(key):
+        raise LLMError(f"Brak prawidłowego klucza {variable}. Uzupełnij go w pliku .env.")
+
+
+def _is_authentication_error(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    response = getattr(error, "response", None)
+    response_status = getattr(response, "status_code", None)
+    detail = str(error).lower()
+    return status_code == 401 or response_status == 401 or (
+        "401" in detail and ("authentication" in detail or "api key" in detail)
+    )
 
 def generate_text(
     prompt: str, 
@@ -233,4 +281,7 @@ def _generate_openai(
         
     except Exception as e:
         logger.error(f"{provider_label} generation error: {e}")
-        raise LLMError(_format_provider_error(provider_label, e))
+        formatted = _format_provider_error(provider_label, e)
+        if _is_authentication_error(e):
+            raise LLMAuthenticationError(formatted) from e
+        raise LLMError(formatted) from e

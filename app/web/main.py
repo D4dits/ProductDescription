@@ -1,7 +1,8 @@
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -14,8 +15,30 @@ from app.config import HOST, PORT
 from app.validator import validate_generated_content
 from app.json_utils import parse_llm_json
 from app.logger import logger
+from app.batch import (
+    BatchError,
+    approve_products,
+    build_report_csv,
+    create_batch,
+    decode_upload,
+    get_batch,
+    get_product,
+    init_db,
+    list_batches,
+    list_products,
+    recover_interrupted_jobs,
+    save_product,
+    start_generation,
+    start_publish,
+)
 
-app = FastAPI(title="graszki.pl - Generator Opisów Produktów")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    recover_interrupted_jobs()
+    yield
+
+
+app = FastAPI(title="graszki.pl - Generator Opisów Produktów", lifespan=lifespan)
 
 # Resolve template & static paths
 WEB_DIR = Path(__file__).resolve().parent
@@ -83,6 +106,25 @@ class RegenerateRequest(BaseModel):
 class ImportCodexResultRequest(BaseModel):
     response_text: str
 
+class BatchImportRequest(BaseModel):
+    sky_csv_base64: str
+    rebel_csv_base64: Optional[str] = None
+    name: Optional[str] = ""
+
+class BatchGenerateRequest(BaseModel):
+    mode: str = "pilot"
+    limit: int = 50
+
+class BatchProductSaveRequest(BaseModel):
+    content: Dict[str, Any]
+    approved: bool = False
+
+class BatchApproveRequest(BaseModel):
+    product_ids: List[str]
+
+class BatchDangerousActionRequest(BaseModel):
+    confirmation: str
+
 def normalize_product_output(data: Dict[str, Any]) -> Dict[str, Any]:
     additional_info = data.get("additional_info") or {}
     if not isinstance(additional_info, dict):
@@ -142,6 +184,91 @@ def normalize_product_output(data: Dict[str, Any]) -> Dict[str, Any]:
 @app.get("/", response_class=HTMLResponse)
 async def read_index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
+
+@app.get("/api/batches")
+def api_list_batches():
+    return {"items": list_batches()}
+
+@app.post("/api/batches/import")
+def api_import_batch(payload: BatchImportRequest):
+    try:
+        sky_raw = decode_upload(payload.sky_csv_base64)
+        rebel_raw = decode_upload(payload.rebel_csv_base64) if payload.rebel_csv_base64 else None
+        return create_batch(sky_raw, rebel_raw, payload.name or "")
+    except BatchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.get("/api/batches/{batch_id}")
+def api_get_batch(batch_id: str):
+    try:
+        return get_batch(batch_id)
+    except BatchError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+@app.get("/api/batches/{batch_id}/products")
+def api_list_batch_products(batch_id: str, status: str = "", limit: int = 200, offset: int = 0):
+    try:
+        return list_products(batch_id, status, limit, offset)
+    except BatchError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+@app.get("/api/batches/{batch_id}/report.csv")
+def api_batch_report(batch_id: str):
+    try:
+        report = build_report_csv(batch_id)
+        return Response(
+            content="\ufeff" + report,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="batch-{batch_id}.csv"'},
+        )
+    except BatchError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+@app.get("/api/batches/{batch_id}/products/{product_id}")
+def api_get_batch_product(batch_id: str, product_id: str):
+    try:
+        return get_product(batch_id, product_id)
+    except BatchError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+@app.post("/api/batches/{batch_id}/generate")
+def api_generate_batch(batch_id: str, payload: BatchGenerateRequest):
+    try:
+        return start_generation(batch_id, payload.mode, payload.limit)
+    except BatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+@app.put("/api/batches/{batch_id}/products/{product_id}")
+def api_save_batch_product(batch_id: str, product_id: str, payload: BatchProductSaveRequest):
+    try:
+        return save_product(batch_id, product_id, payload.content, payload.approved)
+    except BatchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post("/api/batches/{batch_id}/approve")
+def api_approve_batch_products(batch_id: str, payload: BatchApproveRequest):
+    try:
+        return {"updated": approve_products(batch_id, payload.product_ids)}
+    except BatchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post("/api/batches/{batch_id}/publish")
+def api_publish_batch(batch_id: str, payload: BatchDangerousActionRequest):
+    if payload.confirmation != batch_id:
+        raise HTTPException(status_code=400, detail="Potwierdzenie nie zgadza się z ID partii.")
+    try:
+        return start_publish(batch_id)
+    except BatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+@app.post("/api/batches/{batch_id}/rollback")
+def api_rollback_batch(batch_id: str, payload: BatchDangerousActionRequest):
+    if payload.confirmation != batch_id:
+        raise HTTPException(status_code=400, detail="Potwierdzenie nie zgadza się z ID partii.")
+    try:
+        return start_publish(batch_id, rollback=True)
+    except BatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 @app.post("/api/generate")
 async def api_generate(payload: GenerateRequest):

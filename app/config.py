@@ -48,9 +48,21 @@ OUTPUT_DIR = BASE_DIR / "output"
 CACHE_DIR = BASE_DIR / "cache"
 PDF_CACHE_DIR = CACHE_DIR / "pdfs"
 LOGS_DIR = BASE_DIR / "logs"
+BATCH_DATA_DIR = BASE_DIR / "batch_data"
+
+# Supplier and shop integrations. Secrets belong in .env and are never persisted
+# in batch records or API responses.
+REBEL_FEED_URL = os.getenv("REBEL_FEED_URL") or os.environ.get("REBEL_FEED_URL")
+SKYSHOP_API_URL = os.getenv("SKYSHOP_API_URL") or os.environ.get("SKYSHOP_API_URL")
+SKYSHOP_API_KEY = os.getenv("SKYSHOP_API_KEY") or os.environ.get("SKYSHOP_API_KEY")
+try:
+    BATCH_GENERATION_WORKERS = max(1, min(8, int(os.getenv("BATCH_GENERATION_WORKERS", "3"))))
+except ValueError:
+    BATCH_GENERATION_WORKERS = 3
 
 # Ensure directories exist
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+BATCH_DATA_DIR.mkdir(parents=True, exist_ok=True)

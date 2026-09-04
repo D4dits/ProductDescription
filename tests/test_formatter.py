@@ -1,4 +1,6 @@
 import pytest
+from pathlib import Path
+from bs4 import BeautifulSoup
 import app.generator as generator
 from app.pipeline import _build_source_excerpt, _format_source_for_codex_prompt, _normalize_preorder_prefix
 from app.generator import (
@@ -179,6 +181,134 @@ def test_normalize_description_html_removes_unknown_additional_info_rows():
     assert "Czas gry" not in normalized
     assert "brak potwierdzonych danych" not in normalized
     assert "brak potweirdzonych danych" not in normalized
+
+
+def test_producer_link_keeps_games_in_matching_key(monkeypatch):
+    monkeypatch.setattr(generator, "_producer_url_cache", {"ogrygames": "https://graszki.pl/ogrygames"})
+
+    normalized = normalize_description_html(
+        "<h2>Dodatkowe informacje:</h2><ul><li><strong>Wydawca:</strong> Ogry Games</li></ul>"
+    )
+
+    assert '<a href="https://graszki.pl/ogrygames">Ogry Games</a>' in normalized
+
+
+def test_unknown_producer_remains_plain_text(monkeypatch):
+    monkeypatch.setattr(generator, "_producer_url_cache", {"rebel": "https://graszki.pl/rebel"})
+
+    normalized = normalize_description_html(
+        "<h2>Dodatkowe informacje:</h2><ul><li><strong>Wydawca:</strong> Nieobecny Wydawca</li></ul>"
+    )
+
+    assert "Nieobecny Wydawca" in normalized
+    assert "<a " not in normalized
+
+
+def test_accessory_product_data_links_producer(monkeypatch):
+    monkeypatch.setattr(generator, "_producer_url_cache", {"gamegenic": "https://graszki.pl/Gamegenic/pr/603"})
+
+    normalized = normalize_description_html(
+        "<h2>Dane produktu</h2><ul><li><strong>Producent:</strong> Gamegenic</li>"
+        "<li>Kod produktu: GGS10020ML</li><li>EAN: 4251715402238</li></ul>"
+    )
+
+    assert '<a href="https://graszki.pl/Gamegenic/pr/603">Gamegenic</a>' in normalized
+    assert "<strong>Kod produktu:</strong> GGS10020ML" in normalized
+    assert "<strong>EAN:</strong> 4251715402238" in normalized
+
+
+def test_accessory_product_data_links_existing_category(monkeypatch):
+    monkeypatch.setattr(
+        generator,
+        "_category_url_cache",
+        {"koszulki-na-karty": "https://graszki.pl/Koszulki-na-karty-c186"},
+    )
+
+    normalized = normalize_description_html(
+        "<h2>Dane produktu</h2><ul><li>Kategoria: Koszulki na karty</li></ul>"
+    )
+
+    assert '<strong>Kategoria:</strong> <a href="https://graszki.pl/Koszulki-na-karty-c186">Koszulki na karty</a>' in normalized
+
+
+def test_missing_category_is_added_from_store_path(monkeypatch):
+    monkeypatch.setattr(generator, "_category_url_cache", {"rodzinne": "https://graszki.pl/Rodzinne-c5"})
+
+    normalized = normalize_description_html(
+        "<h2>Dodatkowe informacje:</h2><ul><li>Wydanie: polskie</li></ul>",
+        category="Gry planszowe/Rodzinne",
+    )
+
+    assert '<strong>Kategoria:</strong> <a href="https://graszki.pl/Rodzinne-c5">Rodzinne</a>' in normalized
+
+
+def test_generated_category_can_replace_import_default(monkeypatch):
+    monkeypatch.setattr(generator, "_category_url_cache", {"logiczne": "https://graszki.pl/Logiczne-c3"})
+
+    normalized = normalize_description_html(
+        "<h2>Dodatkowe informacje:</h2><ul><li>Kategoria: Rodzinne</li></ul>",
+        category="Logiczne",
+        replace_category=True,
+    )
+
+    assert '<strong>Kategoria:</strong> <a href="https://graszki.pl/Logiczne-c3">Logiczne</a>' in normalized
+    assert "Rodzinne" not in normalized
+
+
+def test_unknown_category_remains_plain_text(monkeypatch):
+    monkeypatch.setattr(generator, "_category_url_cache", {"rodzinne": "https://graszki.pl/Rodzinne-c5"})
+
+    normalized = normalize_description_html(
+        "<h2>Dane produktu</h2><ul><li>Kategoria: Nieistniejąca kategoria</li></ul>"
+    )
+
+    assert "<strong>Kategoria:</strong> Nieistniejąca kategoria" in normalized
+    assert "<a " not in normalized
+
+
+def test_box_contents_are_moved_before_product_data():
+    normalized = normalize_description_html(
+        "<h2>Dane produktu</h2><ul><li>EAN: 123</li></ul>"
+        "<h2>Zawartość pudełka:</h2><ul><li>100 koszulek</li></ul>",
+        box_contents=["100 koszulek"],
+    )
+
+    assert normalized.index("Zawartość pudełka") < normalized.index("Dane produktu")
+    soup = BeautifulSoup(normalized, "html.parser")
+    box_heading = next(heading for heading in soup.find_all("h2") if "Zawartość" in heading.get_text())
+    assert box_heading.find_next_sibling("ul").get_text(" ", strip=True) == "100 koszulek"
+
+
+def test_sitemap_loader_uses_user_agent_and_writes_cache(tmp_path, monkeypatch):
+    xml = b'''<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc>https://graszki.pl/ogrygames</loc></url>
+    </urlset>'''
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return xml
+
+    def fake_urlopen(request, timeout):
+        seen["user_agent"] = request.get_header("User-agent")
+        return Response()
+
+    cache_path = Path(tmp_path) / "producer-sitemap.xml"
+    monkeypatch.setattr(generator, "_producer_url_cache", None)
+    monkeypatch.setattr(generator, "PRODUCER_SITEMAP_CACHE", cache_path)
+    monkeypatch.setattr(generator.urllib.request, "urlopen", fake_urlopen)
+
+    result = generator._load_producer_url_map()
+
+    assert result["ogrygames"] == "https://graszki.pl/ogrygames"
+    assert "GraszkiContentBot" in seen["user_agent"]
+    assert cache_path.read_bytes() == xml
 
 def test_normalize_description_html_links_publisher_and_renames_generic_manual_link():
     html_input = (

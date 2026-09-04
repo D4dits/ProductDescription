@@ -17,6 +17,7 @@ env/
 cache/
 logs/
 output/
+batch_data/
 
 # Local agent/tool state
 .agents/

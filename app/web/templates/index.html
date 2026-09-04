@@ -26,12 +26,142 @@
                 <i class="fa-solid fa-dice-d20 logo-icon"></i>
                 <span class="logo-text">graszki<span class="logo-dot">.pl</span></span>
             </div>
-            <div class="header-tagline">Generator Opisów Produktów</div>
+            <div class="app-mode-switch" role="tablist" aria-label="Tryb pracy">
+                <button class="mode-btn active" id="single-mode-btn" type="button"><i class="fa-solid fa-pen-to-square"></i> Pojedynczy</button>
+                <button class="mode-btn" id="batch-mode-btn" type="button"><i class="fa-solid fa-layer-group"></i> Import Rebel</button>
+            </div>
         </div>
     </header>
 
     <main class="container">
-        <div class="grid-layout">
+        <section id="batch-view" class="batch-view" hidden>
+            <div class="batch-toolbar">
+                <div>
+                    <h1>Aktualizacja opisów z Rebel</h1>
+                    <p>Import, kontrola jakości i bezpieczny zapis pięciu pól treści.</p>
+                </div>
+                <button class="btn btn-secondary" id="batch-refresh-btn" type="button" title="Odśwież stan"><i class="fa-solid fa-rotate"></i></button>
+            </div>
+
+            <section class="batch-import-panel">
+                <div class="form-group">
+                    <label for="batch-name">Nazwa partii</label>
+                    <input id="batch-name" type="text" placeholder="np. Rebel 2026-09-04">
+                </div>
+                <div class="form-group">
+                    <label for="batch-sky-file">Eksport produktów Sky-Shop</label>
+                    <input id="batch-sky-file" type="file" accept=".csv,text/csv" required>
+                </div>
+                <div class="form-group">
+                    <label for="batch-rebel-file">Feed Rebel</label>
+                    <input id="batch-rebel-file" type="file" accept=".csv,text/csv">
+                    <small>Puste pole użyje REBEL_FEED_URL z .env.</small>
+                </div>
+                <button class="btn btn-primary" id="batch-import-btn" type="button"><i class="fa-solid fa-file-import"></i> Utwórz partię</button>
+            </section>
+
+            <section id="batch-workspace" hidden>
+                <div class="batch-heading-row">
+                    <div>
+                        <span class="product-badge" id="batch-status">ready</span>
+                        <h2 id="batch-title">Partia</h2>
+                        <div class="batch-id">ID: <code id="batch-id"></code></div>
+                    </div>
+                    <select id="batch-picker" aria-label="Ostatnie partie"></select>
+                </div>
+
+                <div class="batch-stats" id="batch-stats"></div>
+                <div class="batch-message" id="batch-message" hidden></div>
+                <div class="batch-progress" id="batch-progress" hidden>
+                    <div class="batch-progress-meta">
+                        <strong id="batch-progress-title"></strong>
+                        <span id="batch-progress-time"></span>
+                    </div>
+                    <div class="batch-progress-track"><div id="batch-progress-bar"></div></div>
+                    <div class="batch-progress-current" id="batch-progress-current"></div>
+                </div>
+
+                <div class="batch-actions">
+                    <button class="btn btn-secondary" id="batch-pilot-btn" type="button"><i class="fa-solid fa-flask"></i> Generuj pilot 10</button>
+                    <label class="batch-limit-control" for="batch-generation-limit">Liczba <input id="batch-generation-limit" type="number" min="1" max="200" value="50"></label>
+                    <button class="btn btn-primary" id="batch-full-btn" type="button"><i class="fa-solid fa-gears"></i> Generuj kolejne</button>
+                    <button class="btn btn-success" id="batch-approve-visible-btn" type="button"><i class="fa-solid fa-check-double"></i> Zatwierdź widoczne</button>
+                    <a class="btn btn-secondary" id="batch-report-btn" href="#" download><i class="fa-solid fa-file-csv"></i> Raport</a>
+                    <select id="batch-status-filter" aria-label="Filtr statusu">
+                        <option value="">Wszystkie statusy</option>
+                        <option value="matched">Dopasowane</option>
+                        <option value="generating">Generowane</option>
+                        <option value="needs_review">Do kontroli</option>
+                        <option value="approved">Zatwierdzone</option>
+                        <option value="verified">Zweryfikowane</option>
+                        <option value="failed">Błędy</option>
+                        <option value="unchanged">Bez zmian</option>
+                    </select>
+                </div>
+
+                <div class="batch-content-grid">
+                    <div class="batch-list-pane">
+                        <div class="batch-table-wrap">
+                            <table class="batch-table">
+                                <thead><tr><th></th><th>ID</th><th>Produkt</th><th>Typ</th><th>Status</th></tr></thead>
+                                <tbody id="batch-product-rows"></tbody>
+                            </table>
+                        </div>
+                        <div class="batch-pagination">
+                            <button class="btn btn-secondary" id="batch-prev-btn" type="button" title="Poprzednia strona"><i class="fa-solid fa-chevron-left"></i></button>
+                            <span id="batch-page-label"></span>
+                            <button class="btn btn-secondary" id="batch-next-btn" type="button" title="Następna strona"><i class="fa-solid fa-chevron-right"></i></button>
+                        </div>
+                    </div>
+
+                    <aside class="batch-editor" id="batch-editor" hidden>
+                        <div class="batch-editor-header">
+                            <div><strong id="batch-product-name"></strong><div id="batch-product-meta"></div></div>
+                            <span class="product-badge" id="batch-product-status"></span>
+                        </div>
+                        <div class="batch-status-reason" id="batch-status-reason"></div>
+                        <div id="batch-product-alerts"></div>
+                        <div class="batch-field-header"><label for="batch-extended-description">Opis rozszerzony HTML</label><button class="btn-copy" type="button" onclick="copyValue('batch-extended-description')"><i class="fa-regular fa-copy"></i> Kopiuj HTML</button></div>
+                        <div class="batch-html-split">
+                            <textarea id="batch-extended-description" rows="18" class="code-font"></textarea>
+                            <div class="batch-preview-pane">
+                                <span>Podgląd wizualny opisu</span>
+                                <div class="html-preview-box batch-html-preview" id="batch-html-preview"></div>
+                            </div>
+                        </div>
+                        <div class="batch-field-header"><label for="batch-short-description">Opis skrócony</label><button class="btn-copy" type="button" onclick="copyValue('batch-short-description')"><i class="fa-regular fa-copy"></i> Kopiuj</button></div>
+                        <textarea id="batch-short-description" rows="3"></textarea>
+                        <div class="batch-field-header"><label for="batch-seo-title">Tytuł strony</label><button class="btn-copy" type="button" onclick="copyValue('batch-seo-title')"><i class="fa-regular fa-copy"></i> Kopiuj</button></div>
+                        <input id="batch-seo-title" type="text">
+                        <div class="batch-field-header"><label for="batch-meta-description">Opis strony</label><button class="btn-copy" type="button" onclick="copyValue('batch-meta-description')"><i class="fa-regular fa-copy"></i> Kopiuj</button></div>
+                        <textarea id="batch-meta-description" rows="3"></textarea>
+                        <div class="batch-field-header"><label for="batch-tags">Tagi</label><button class="btn-copy" type="button" onclick="copyValue('batch-tags')"><i class="fa-regular fa-copy"></i> Kopiuj</button></div>
+                        <input id="batch-tags" type="text">
+                        <details class="batch-source-details" id="batch-source-details">
+                            <summary>Dane źródłowe Rebel</summary>
+                            <a id="batch-source-link" href="#" target="_blank" rel="noopener" hidden>Otwórz kartę produktu</a>
+                            <div id="batch-source-facts"></div>
+                        </details>
+                        <div class="batch-editor-actions">
+                            <button class="btn btn-secondary" id="batch-save-btn" type="button"><i class="fa-solid fa-floppy-disk"></i> Zapisz</button>
+                            <button class="btn btn-success" id="batch-save-approve-btn" type="button"><i class="fa-solid fa-check"></i> Zapisz i zatwierdź</button>
+                        </div>
+                    </aside>
+                </div>
+
+                <section class="batch-publish-band">
+                    <div>
+                        <h3>Zapis do Sky-Shop</h3>
+                        <p>Wpisz ID partii. Produkty pozostaną ukryte; zmienione zostaną wyłącznie dwa opisy i trzy pola SEO.</p>
+                    </div>
+                    <input id="batch-confirmation" type="text" placeholder="ID partii" autocomplete="off">
+                    <button class="btn btn-primary" id="batch-publish-btn" type="button"><i class="fa-solid fa-cloud-arrow-up"></i> Wyślij zatwierdzone</button>
+                    <button class="btn btn-secondary" id="batch-rollback-btn" type="button"><i class="fa-solid fa-clock-rotate-left"></i> Przywróć kopię</button>
+                </section>
+            </section>
+        </section>
+
+        <div class="grid-layout" id="single-view">
             <!-- Left Side: Configuration Form -->
             <section class="card glass-card form-section">
                 <div class="card-header">

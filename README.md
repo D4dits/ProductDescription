@@ -180,3 +180,42 @@ Aby sprawdzić poprawność działania algorytmów walidacyjnych, rozstrzygania 
 ```bash
 pytest
 ```
+
+---
+
+## Import hurtowy Rebel do Sky-Shop
+
+Panel ma osobny tryb **Import Rebel** przeznaczony do cyklicznego przygotowywania opisów i SEO dla produktów zaimportowanych z hurtowni.
+
+Ustaw w lokalnym `.env`:
+
+```env
+REBEL_FEED_URL=https://hurt.rebel.pl/export/products/...?...
+SKYSHOP_API_URL=https://graszki.pl/api
+SKYSHOP_API_KEY=twoj_klucz_webapi
+BATCH_GENERATION_WORKERS=3
+```
+
+Pełny adres feedu i klucze są sekretami. Nie zapisuj ich w repozytorium ani w raportach.
+
+Przebieg pracy:
+
+1. Otwórz `http://127.0.0.1:8000/#batch` i prześlij eksport produktów ze Sky-Shop. Feed Rebel można również przesłać jako plik; bez pliku zostanie pobrany z `REBEL_FEED_URL`.
+2. Sprawdź liczbę dopasowań i uruchom **Generuj pilot 10**.
+3. Przejrzyj każdy wynik, popraw go w razie potrzeby i zatwierdź komplet pilota.
+4. Ustaw wielkość paczki (domyślnie 50) i użyj **Generuj kolejne**. Ta akcja jest zablokowana do czasu zatwierdzenia pilota.
+5. Zatwierdź wybrane treści. Samo generowanie i zatwierdzanie nie łączy się ze Sky-Shop.
+6. Przed publikacją wpisz widoczne w panelu ID partii i kliknij **Wyślij zatwierdzone**.
+
+Generowanie działa równolegle. `BATCH_GENERATION_WORKERS` określa liczbę jednoczesnych żądań
+do modelu (domyślnie 3, zakres 1-8). Panel pokazuje postęp, bieżący produkt, czas pracy i ETA.
+Status `Do kontroli` oznacza poprawnie wygenerowaną treść oczekującą na ręczną weryfikację,
+a nie błąd walidacji.
+
+Przed generowaniem aplikacja próbuje uzupełnić brakujące dane strukturalne z publicznej karty
+produktu Rebel. Potwierdzona lista zawartości pudełka jest zapisywana wraz ze źródłem i
+wstawiana do opisu deterministycznie, bez powierzania jej modelowi językowemu.
+
+Publikacja używa `addUpdateProducts`, `importType=update` i `prodIndex=prod_id`. XML zawiera wyłącznie ID produktu, opis rozszerzony, opis skrócony, tytuł SEO, opis SEO i tagi. Cena, stan, VAT, kategorie, widoczność oraz ustawienia hurtowni nie są wysyłane. Przed zmianą zapisywana jest kopia pięciu pól przez `getProductData`, a po zapisie te same pola są ponownie odczytywane i porównywane. Kopię można później przywrócić akcją **Przywróć kopię**.
+
+Stan kolejki znajduje się w ignorowanym przez Git katalogu `batch_data/`. Ponowne zaimportowanie niezmienionych produktów po zweryfikowanej publikacji oznaczy je jako `unchanged` i nie wygeneruje treści ponownie.

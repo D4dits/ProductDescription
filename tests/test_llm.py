@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app import llm
 
 
@@ -86,3 +88,28 @@ def test_deepseek_provider_aliases_are_supported(monkeypatch):
         assert llm.generate_text("test", api_key="deepseek-test-key", provider=provider) == "{}"
 
     assert called == ["DeepSeek", "DeepSeek"]
+
+
+def test_placeholder_keys_are_rejected(monkeypatch):
+    monkeypatch.setattr(llm, "LLM_PROVIDER", "deepseek")
+    monkeypatch.setattr(llm, "DEEPSEEK_API_KEY", "your_deepseek_api_key_here")
+
+    try:
+        llm.validate_llm_configuration()
+    except llm.LLMError as exc:
+        assert "DEEPSEEK_API_KEY" in str(exc)
+    else:
+        raise AssertionError("Placeholder API key should be rejected")
+
+
+def test_authentication_error_has_actionable_message():
+    error = RuntimeError("Authentication Fails: API key is invalid")
+    error.response = SimpleNamespace(
+        status_code=401,
+        json=lambda: {"error": {"message": "Authentication Fails", "code": "invalid_api_key"}},
+    )
+
+    message = llm._format_provider_error("DeepSeek", error)
+
+    assert "DeepSeek odrzucił klucz API (401)" in message
+    assert ".env" in message
