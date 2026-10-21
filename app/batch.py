@@ -68,6 +68,9 @@ SKY_XML_FIELDS = {
     "meta_description": "prod_seodesc",
     "tags": "prod_keywords",
 }
+PUBLISH_CHUNK_SIZE = 10
+STALE_OPERATION_SECONDS = 15 * 60
+ACTIVE_OPERATION_STATUSES = {"generating", "publishing", "rolling_back"}
 _running_jobs: set[tuple[str, str]] = set()
 _jobs_lock = threading.Lock()
 
@@ -78,6 +81,36 @@ class BatchError(RuntimeError):
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _parse_utc(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _operation_is_stale(row: sqlite3.Row | dict[str, Any], now: datetime | None = None) -> bool:
+    if row["status"] not in ACTIVE_OPERATION_STATUSES:
+        return False
+    updated_at = _parse_utc(row["updated_at"])
+    if not updated_at:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return (now - updated_at).total_seconds() >= STALE_OPERATION_SECONDS
+
+
+def _stale_operation_message(status: str) -> str:
+    action = "publikacja" if status == "publishing" else "przywracanie kopii" if status == "rolling_back" else "generowanie"
+    return (
+        f"Wygląda na to, że {action} została przerwana. "
+        "Zweryfikowane produkty nie będą wysyłane ponownie; możesz wznowić operację dla pozostałych produktów."
+    )
 
 
 def _connect() -> sqlite3.Connection:
@@ -157,7 +190,8 @@ def recover_interrupted_jobs() -> None:
             (now,),
         )
         conn.execute(
-            "UPDATE batches SET status='failed', message='Operacja przerwana przez restart serwera.', updated_at=? "
+            "UPDATE batches SET status='failed', message='Operacja przerwana przez restart serwera. "
+            "Zweryfikowane produkty nie będą wysyłane ponownie; możesz wznowić operację dla pozostałych produktów.', updated_at=? "
             "WHERE status IN ('generating','publishing','rolling_back')",
             (now,),
         )
@@ -448,17 +482,20 @@ def get_batch(batch_id: str) -> dict[str, Any]:
         if not row:
             raise BatchError("Nie znaleziono partii.")
         result = dict(row)
+        stale = _operation_is_stale(row)
+        if stale:
+            result["status"] = "interrupted"
+            result["message"] = _stale_operation_message(row["status"])
         result["counts"] = _counts(conn, batch_id)
         total = result.get("operation_total") or 0
         done = result.get("operation_done") or 0
         started_at = result.get("operation_started_at") or ""
         elapsed = 0
         if started_at:
-            try:
-                elapsed = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(started_at)).total_seconds()))
-            except ValueError:
-                pass
-        eta = int(elapsed / done * (total - done)) if done and total > done else 0
+            parsed_started_at = _parse_utc(started_at)
+            if parsed_started_at:
+                elapsed = max(0, int((datetime.now(timezone.utc) - parsed_started_at).total_seconds()))
+        eta = 0 if stale else int(elapsed / done * (total - done)) if done and total > done else 0
         result["progress"] = {
             "done": done,
             "total": total,
@@ -467,6 +504,7 @@ def get_batch(batch_id: str) -> dict[str, Any]:
             "eta_seconds": eta,
             "current_product": result.get("current_product") or "",
             "workers": BATCH_GENERATION_WORKERS,
+            "stale": stale,
         }
         return result
 
@@ -690,6 +728,65 @@ def infer_primary_category(name: str, source: dict[str, Any]) -> str:
     return store_category or supplier_category
 
 
+def _truncate_at_word(value: str, max_length: int, min_length: int = 0) -> str:
+    value = _plain_text(value)
+    if len(value) <= max_length:
+        return value
+    fragment = value[:max_length]
+    punctuation = max(fragment.rfind("."), fragment.rfind("!"), fragment.rfind("?"))
+    sentence_threshold = min_length or max_length // 2
+    if punctuation >= 0 and punctuation + 1 >= sentence_threshold:
+        return fragment[:punctuation + 1].strip()
+    space = fragment.rfind(" ", min_length, max_length)
+    shortened = fragment[:space if space >= min_length else max_length].rstrip(" ,;:-")
+    if shortened.endswith((".", "!", "?")):
+        return shortened
+    return shortened[:max_length - 1].rstrip() + "."
+
+
+def repair_generated_metadata(content: dict[str, Any]) -> list[str]:
+    """Repair mechanical length violations without introducing product facts."""
+    repairs: list[str] = []
+    short_description = _plain_text(content.get("short_description", ""))
+    if len(short_description) > 300:
+        content["short_description"] = _truncate_at_word(short_description, 300)
+        repairs.append("Automatycznie skrócono opis skrócony do 300 znaków.")
+
+    meta_description = _plain_text(content.get("meta_description", ""))
+    if len(meta_description) > 170:
+        content["meta_description"] = _truncate_at_word(meta_description, 160, 130)
+        repairs.append("Automatycznie skrócono meta opis.")
+    elif meta_description and len(meta_description) < 130:
+        addition = _plain_text(content.get("short_description", ""))
+        candidate = f"{meta_description} {addition}".strip() if addition and addition.casefold() not in meta_description.casefold() else meta_description
+        if len(candidate) < 130:
+            candidate = f"{candidate} Sprawdź szczegóły produktu w Graszki.pl.".strip()
+        content["meta_description"] = _truncate_at_word(candidate, 160, 130)
+        repairs.append("Automatycznie uzupełniono zbyt krótki meta opis.")
+    return repairs
+
+
+def _content_is_complete(content: dict[str, Any]) -> bool:
+    return all(content.get(field) for field in CONTENT_FIELDS)
+
+
+def _generate_content_with_retry(name: str, source: dict[str, Any], product_type: str) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            content = _generate_accessory(name, source) if product_type == "accessory" else _generate_game(name, source)
+            if _content_is_complete(content):
+                return content
+            last_error = LLMError("Model nie zwrócił wszystkich wymaganych pól.")
+        except LLMAuthenticationError:
+            raise
+        except (LLMError, json.JSONDecodeError) as exc:
+            last_error = exc
+        if attempt == 0:
+            logger.warning("Retrying incomplete generation for product %s", name)
+    raise LLMError(f"Generowanie nie powiodło się po dwóch próbach: {last_error}")
+
+
 def ensure_box_contents(
     content: dict[str, Any],
     name: str,
@@ -880,9 +977,11 @@ def _generate_batch_product(batch_id: str, product_id: str, stop: threading.Even
             (json.dumps(source, ensure_ascii=False), batch_id, product_id),
         )
     try:
-        content = _generate_accessory(row["name"], source) if row["product_type"] == "accessory" else _generate_game(row["name"], source)
+        content = _generate_content_with_retry(row["name"], source, row["product_type"])
+        repairs = repair_generated_metadata(content)
         content = ensure_box_contents(content, row["name"], source)
         errors, warnings = validate_batch_content(content, row["product_type"], source)
+        warnings = repairs + warnings
         status = "failed" if errors else "needs_review"
         with _connect() as conn:
             conn.execute(
@@ -1150,6 +1249,10 @@ def _normalize_text_for_readback(value: Any) -> str:
 
 def _normalize_html_for_readback(value: Any) -> str:
     soup = BeautifulSoup(unescape(str(value or "")), "html.parser")
+    # Sky-Shop sanitizes semantic section wrappers but retains their contents.
+    # Treat the wrapper itself as insignificant during post-write verification.
+    for section in soup.find_all("section"):
+        section.unwrap()
     for tag in soup.find_all(True):
         classes = [name for name in tag.get("class", []) if name != "def"]
         if classes:
@@ -1158,6 +1261,8 @@ def _normalize_html_for_readback(value: Any) -> str:
             del tag["class"]
     html = soup.decode(formatter="minimal")
     html = re.sub(r">\s+<", "><", html)
+    # The editor may insert a formatting space immediately after a line break.
+    html = re.sub(r"(<br\s*/?>)\s+", r"\1", html, flags=re.IGNORECASE)
     return _normalize_text_for_readback(html)
 
 
@@ -1262,8 +1367,8 @@ def _run_publish(batch_id: str, rollback: bool = False) -> None:
         if not rows:
             raise BatchError("Brak produktów gotowych do operacji.")
 
-        for start in range(0, len(rows), 50):
-            chunk_rows = rows[start:start + 50]
+        for start in range(0, len(rows), PUBLISH_CHUNK_SIZE):
+            chunk_rows = rows[start:start + PUBLISH_CHUNK_SIZE]
             products = [_decode_product(row) for row in chunk_rows]
             ids = [product["product_id"] for product in products]
             with _connect() as conn:
@@ -1346,10 +1451,12 @@ def _run_publish(batch_id: str, rollback: bool = False) -> None:
 
 
 def start_publish(batch_id: str, rollback: bool = False) -> dict[str, str]:
-    get_batch(batch_id)
     action = "rollback" if rollback else "publish"
     SkyShopClient()  # Fail before starting a background job when credentials are absent.
     with _connect() as conn:
+        batch_row = conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch_row:
+            raise BatchError("Nie znaleziono partii.")
         ready = conn.execute(
             "SELECT COUNT(*) FROM batch_products WHERE batch_id=? AND "
             + ("backup_json IS NOT NULL" if rollback else "status IN ('approved', 'failed') AND approved=1"),
@@ -1360,6 +1467,8 @@ def start_publish(batch_id: str, rollback: bool = False) -> dict[str, str]:
     key = (batch_id, action)
     with _jobs_lock:
         if key in _running_jobs:
+            raise BatchError("Ta operacja już trwa.")
+        if batch_row["status"] in ACTIVE_OPERATION_STATUSES and not _operation_is_stale(batch_row):
             raise BatchError("Ta operacja już trwa.")
         _running_jobs.add(key)
     threading.Thread(target=_run_publish, args=(batch_id, rollback), daemon=True).start()

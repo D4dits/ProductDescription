@@ -2,6 +2,7 @@ import base64
 import csv
 import io
 import json
+from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -346,6 +347,58 @@ def test_primary_category_uses_product_kind_instead_of_import_default():
     ) == "Gry planszowe/Rodzinne"
 
 
+def test_generated_metadata_length_violations_are_repaired():
+    content = {
+        "short_description": "Bardzo dobry opis produktu " * 20,
+        "meta_description": "Krótki meta opis produktu.",
+    }
+
+    repairs = batch.repair_generated_metadata(content)
+
+    assert len(content["short_description"]) <= 300
+    assert 130 <= len(content["meta_description"]) <= 170
+    assert len(repairs) == 2
+
+
+def test_long_meta_description_is_shortened_on_word_boundary():
+    content = {
+        "short_description": "Krótki opis.",
+        "meta_description": "Rozbudowany opis produktu przeznaczony do automatycznego skrócenia bez urywania wyrazów " * 4,
+    }
+
+    batch.repair_generated_metadata(content)
+
+    assert 130 <= len(content["meta_description"]) <= 170
+    assert content["meta_description"].endswith(".")
+
+
+def test_truncation_never_exceeds_limit_when_punctuation_is_at_boundary():
+    value = "a" * 300 + ". dalszy tekst"
+
+    assert len(batch._truncate_at_word(value, 300)) <= 300
+
+
+def test_incomplete_generation_is_retried_once(monkeypatch):
+    complete = {
+        "extended_description_html": "<p>Opis</p>",
+        "short_description": "Krótki opis",
+        "seo_title": "Tytuł | Graszki.pl",
+        "meta_description": "Meta opis",
+        "tags": ["tag"],
+    }
+    responses = iter([{"response": "odmowa"}, complete])
+    calls = []
+
+    def fake_generate(name, source):
+        calls.append(name)
+        return next(responses)
+
+    monkeypatch.setattr(batch, "_generate_game", fake_generate)
+
+    assert batch._generate_content_with_retry("Gra", {}, "game") == complete
+    assert calls == ["Gra", "Gra"]
+
+
 def test_corrupted_additional_list_is_rebuilt_from_source():
     content = {
         "extended_description_html": (
@@ -494,6 +547,117 @@ def test_publish_accepts_omitted_product_and_verifies_readback(tmp_path, monkeyp
     assert batch.get_batch(created["id"])["status"] == "completed"
 
 
+def test_stale_publish_is_reported_as_interrupted(tmp_path, monkeypatch):
+    monkeypatch.setattr(batch, "DB_PATH", tmp_path / "batch.sqlite3")
+    created = batch.create_batch(
+        csv_bytes(SKY_HEADER, [sky_row()], ";", "utf-8"),
+        csv_bytes(REBEL_HEADER, [rebel_row()], ",", "iso-8859-2"),
+        "Wisząca publikacja",
+    )
+    old_time = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(timespec="seconds")
+    with batch._connect() as conn:
+        conn.execute(
+            "UPDATE batches SET status='publishing', updated_at=?, operation_started_at=?, operation_total=10, operation_done=3 "
+            "WHERE id=?",
+            (old_time, old_time, created["id"]),
+        )
+
+    result = batch.get_batch(created["id"])
+
+    assert result["status"] == "interrupted"
+    assert result["progress"]["stale"] is True
+    assert result["progress"]["eta_seconds"] == 0
+    assert "wznowić operację" in result["message"]
+
+
+def test_resumed_publish_skips_verified_products_and_uses_small_chunks(tmp_path, monkeypatch):
+    monkeypatch.setattr(batch, "DB_PATH", tmp_path / "batch.sqlite3")
+    monkeypatch.setattr(batch, "PUBLISH_CHUNK_SIZE", 1)
+    created = batch.create_batch(
+        csv_bytes(
+            SKY_HEADER,
+            [
+                sky_row("Gra A", "101", "5901"),
+                sky_row("Gra B", "102", "5902"),
+                sky_row("Gra C", "103", "5903"),
+            ],
+            ";",
+            "utf-8",
+        ),
+        csv_bytes(
+            REBEL_HEADER,
+            [
+                rebel_row("Gra A", "5901"),
+                rebel_row("Gra B", "5902"),
+                rebel_row("Gra C", "5903"),
+            ],
+            ",",
+            "iso-8859-2",
+        ),
+        "Wznowienie",
+    )
+    content = {
+        "extended_description_html": "<h2>Opis</h2><p>Nowa treść.</p>",
+        "short_description": "Nowy krótki opis",
+        "seo_title": "Nowy tytuł | Graszki.pl",
+        "meta_description": "Nowy opis strony przygotowany na potrzeby bezpiecznego testu publikacji produktu w sklepie internetowym wraz z kontrolą danych po wykonanym zapisie.",
+        "tags": ["jeden", "dwa", "trzy", "cztery", "pięć"],
+    }
+    with batch._connect() as conn:
+        for product_id in ("101", "102"):
+            conn.execute(
+                "UPDATE batch_products SET status='approved', approved=1, content_json=? WHERE batch_id=? AND product_id=?",
+                (json.dumps(content, ensure_ascii=False), created["id"], product_id),
+            )
+        conn.execute(
+            "UPDATE batch_products SET status='verified', approved=1, content_json=?, backup_json=? WHERE batch_id=? AND product_id='103'",
+            (json.dumps(content, ensure_ascii=False), json.dumps(content, ensure_ascii=False), created["id"]),
+        )
+
+    class ResumeClient:
+        def __init__(self):
+            self.written_ids = set()
+            self.get_calls = []
+            self.update_calls = []
+
+        def get_products(self, product_ids):
+            self.get_calls.append(list(product_ids))
+            result = {}
+            for product_id in product_ids:
+                values = content if product_id in self.written_ids else {
+                    "extended_description_html": "<p>Stary opis</p>",
+                    "short_description": "Stary",
+                    "seo_title": "",
+                    "meta_description": "",
+                    "tags": [],
+                }
+                result[product_id] = {
+                    "prod_id": product_id, "prod_price": "99.99", "prod_amount": "8", "prod_hidden": "1",
+                    "prod_desclong": values["extended_description_html"], "prod_desc": values["short_description"],
+                    "prod_seotitle": values["seo_title"], "prod_seodesc": values["meta_description"],
+                    "prod_keywords": ", ".join(values["tags"]),
+                }
+            return result
+
+        def update_products(self, xml):
+            ids = [node.text for node in ET.fromstring(xml).findall("item/prod_id")]
+            self.update_calls.append(ids)
+            self.written_ids.update(ids)
+            return {"response_code": 200, "stats": {"errors": 0, "total": len(ids), "updated": len(ids)}}
+
+    client = ResumeClient()
+    monkeypatch.setattr(batch, "SkyShopClient", lambda: client)
+
+    batch._run_publish(created["id"])
+
+    assert client.update_calls == [["101"], ["102"]]
+    assert all("103" not in call for call in client.get_calls)
+    assert batch.get_product(created["id"], "101")["status"] == "verified"
+    assert batch.get_product(created["id"], "102")["status"] == "verified"
+    assert batch.get_product(created["id"], "103")["status"] == "verified"
+    assert batch.get_batch(created["id"])["progress"]["total"] == 2
+
+
 def test_update_response_accepts_individual_omissions_when_aggregate_is_wrong():
     response = {
         "response_code": 200,
@@ -534,14 +698,20 @@ def test_invariant_hash_ignores_content_but_detects_commerce_changes():
 
 def test_readback_comparison_tolerates_skyshop_text_normalization():
     expected = {
-        "extended_description_html": '<div class="def">\n<p>Gra&nbsp;rodzinna – szybka.</p><ul><li>Test</li></ul>\n</div>',
+        "extended_description_html": (
+            '<div class="def"><section><p>Gra&nbsp;rodzinna – szybka.<br/>Drugi wiersz.</p>'
+            '<ul><li>Test</li></ul></section></div>'
+        ),
         "short_description": "Gra rodzinna – szybka „edycja”.",
         "seo_title": "Gra – rodzinna | Graszki.pl",
         "meta_description": "Opis – dla 2–4 graczy.",
         "tags": ["Gra rodzinna", "Kolej"],
     }
     actual = {
-        "extended_description_html": '<div class="def"><p>Gra rodzinna - szybka.</p><ul class="def"><li class="def">Test</li></ul></div>',
+        "extended_description_html": (
+            '<div class="def"><p>Gra rodzinna - szybka.<br/> Drugi wiersz.</p>'
+            '<ul class="def"><li class="def">Test</li></ul></div>'
+        ),
         'short_description': 'Gra rodzinna - szybka "edycja".',
         "seo_title": "Gra - rodzinna | Graszki.pl",
         "meta_description": "Opis - dla 2-4 graczy.",
@@ -550,6 +720,17 @@ def test_readback_comparison_tolerates_skyshop_text_normalization():
 
     assert batch._content_differences(expected, actual) == []
     assert batch._normalized_hash({"extended_description_html": None})
+
+
+def test_readback_comparison_still_detects_meaningful_html_changes():
+    expected = {
+        "extended_description_html": '<section><h3>Dane produktu</h3><p><a href="/wydawca">Wydawca</a></p></section>',
+    }
+    actual = {
+        "extended_description_html": '<h3>Dane produktu</h3><p>Wydawca</p>',
+    }
+
+    assert batch._content_differences(expected, actual) == ["opis rozszerzony"]
 
 
 def test_readback_comparison_names_different_fields():

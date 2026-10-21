@@ -1053,12 +1053,12 @@ async function refreshBatch() {
         document.getElementById("batch-title").textContent = batch.name;
         document.getElementById("batch-id").textContent = batch.id;
         document.getElementById("batch-report-btn").href = `/api/batches/${batch.id}/report.csv`;
-        const batchLabels = {ready: "Gotowa", generating: "Generowanie", review: "Do kontroli", failed: "Błąd", completed: "Zakończona", completed_with_errors: "Zakończona z błędami", publishing: "Wysyłanie", rolling_back: "Przywracanie", rolled_back: "Przywrócona"};
+        const batchLabels = {ready: "Gotowa", generating: "Generowanie", review: "Do kontroli", failed: "Błąd", interrupted: "Przerwana", completed: "Zakończona", completed_with_errors: "Zakończona z błędami", publishing: "Wysyłanie", rolling_back: "Przywracanie", rolled_back: "Przywrócona"};
         document.getElementById("batch-status").textContent = batchLabels[batch.status] || batch.status;
         const message = document.getElementById("batch-message");
         message.hidden = !batch.message;
         message.textContent = batch.message || "";
-        message.classList.toggle("is-error", batch.status === "failed" || /błąd|odrzucił/i.test(batch.message || ""));
+        message.classList.toggle("is-error", ["failed", "interrupted"].includes(batch.status) || /błąd|odrzucił|przerwan/i.test(batch.message || ""));
         renderBatchProgress(batch);
         const busy = ["generating", "publishing", "rolling_back"].includes(batch.status);
         document.getElementById("batch-pilot-btn").disabled = busy;
